@@ -12,21 +12,14 @@ permissions:
   packages: write
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/backend
+  REGISTRY: 172.20.0.161:30500
+  IMAGE_NAME: cassandra-yt-mcp/backend
 
 jobs:
   build-and-push:
     runs-on: gh-arc-cassandra-yt-mcp
     steps:
       - uses: actions/checkout@v4
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
