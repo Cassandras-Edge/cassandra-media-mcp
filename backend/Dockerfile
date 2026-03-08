@@ -1,6 +1,6 @@
-FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+# ── Stage 1: GPU/ML dependencies (cached, rarely changes) ──
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04 AS gpu-base
 
-ARG YTDLP_CHANNEL=nightly
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,6 +10,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
  && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# PyTorch + NeMo + pyannote — the slow part (~3GB, only re-runs when these change)
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir \
+      torch torchaudio --index-url https://download.pytorch.org/whl/cu128 \
+ && pip install --no-cache-dir \
+      "nemo_toolkit[asr]>=2.0.0" \
+      "pyannote.audio>=3.3.0"
+
+# ── Stage 2: App code (fast, changes often) ──
+FROM gpu-base AS app
+
+ARG YTDLP_CHANNEL=nightly
 
 RUN set -eux; \
     if [ "$YTDLP_CHANNEL" = "nightly" ]; then \
@@ -30,14 +46,10 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN python -m venv /opt/venv
-
 ENV PATH="/opt/venv/bin:${PATH}"
 
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir \
-      torch torchaudio --index-url https://download.pytorch.org/whl/cu128 \
- && pip install --no-cache-dir ".[gpu]"
+# Only installs the lightweight app deps (fastapi, httpx, etc.)
+RUN pip install --no-cache-dir "."
 
 RUN mkdir -p /data && chown -R app:app /app /data
 
