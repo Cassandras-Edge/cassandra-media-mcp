@@ -74,7 +74,7 @@ class LocalTranscriber:
 
             kwargs: dict[str, str] = {}
             if self._huggingface_token:
-                kwargs["use_auth_token"] = self._huggingface_token
+                kwargs["token"] = self._huggingface_token
             pipeline = Pipeline.from_pretrained(_PYANNOTE_PIPELINE, **kwargs)
             pipeline.to(self._device)
             self._diarization_pipeline = pipeline
