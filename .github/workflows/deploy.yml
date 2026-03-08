@@ -29,16 +29,33 @@ jobs:
       - name: Pull cached gpu-base image
         run: docker pull ${{ env.REGISTRY }}/${{ env.GPU_BASE_TAG }} || true
 
-      - name: Build gpu-base stage
+      - name: Check if gpu-base needs rebuild
+        id: check-base
+        run: |
+          # Hash the gpu-base portion of the Dockerfile (everything before "FROM gpu-base")
+          BASE_HASH=$(sed '/^FROM gpu-base/q' backend/Dockerfile | sha256sum | cut -c1-16)
+          # Compare with label on cached image
+          CACHED_HASH=$(docker inspect --format='{{index .Config.Labels "gpu-base.hash"}}' \
+            ${{ env.REGISTRY }}/${{ env.GPU_BASE_TAG }} 2>/dev/null || echo "none")
+          if [ "$BASE_HASH" != "$CACHED_HASH" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "hash=$BASE_HASH" >> "$GITHUB_OUTPUT"
+            echo "gpu-base changed ($CACHED_HASH → $BASE_HASH), rebuilding"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "gpu-base unchanged, skipping rebuild"
+          fi
+
+      - name: Build and push gpu-base
+        if: steps.check-base.outputs.changed == 'true'
         run: |
           docker build \
             --target gpu-base \
+            --label "gpu-base.hash=${{ steps.check-base.outputs.hash }}" \
             --cache-from ${{ env.REGISTRY }}/${{ env.GPU_BASE_TAG }} \
             -t ${{ env.REGISTRY }}/${{ env.GPU_BASE_TAG }} \
             backend/
-
-      - name: Push gpu-base cache image
-        run: docker push ${{ env.REGISTRY }}/${{ env.GPU_BASE_TAG }}
+          docker push ${{ env.REGISTRY }}/${{ env.GPU_BASE_TAG }}
 
       - name: Extract metadata
         id: meta
@@ -46,7 +63,6 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
             type=sha,prefix=
 
       - name: Build final image
