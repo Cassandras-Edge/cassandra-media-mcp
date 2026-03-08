@@ -40,7 +40,7 @@ SUPPORTED_LANGUAGES: frozenset[str] = frozenset(
 )
 _EUROPEAN_SCRIPTS: frozenset[str] = frozenset({"LATIN", "CYRILLIC", "GREEK"})
 _PARAKEET_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
-_PYANNOTE_PIPELINE = "pyannote/speaker-diarization-community-1"
+_PYANNOTE_PIPELINE = "pyannote/speaker-diarization-3.1"
 
 
 class LocalTranscriber:
