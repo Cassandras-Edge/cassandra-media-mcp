@@ -18,8 +18,9 @@ export class CassandraYtMCP extends McpAgent<Env, Record<string, never>, Props> 
     this.server.registerTool(
       "transcribe",
       {
-        description: "Queue a video URL for download and transcription.",
-        inputSchema: { url: z.string().describe("A supported video URL") },
+        description: "Queue a video for transcription.",
+        annotations: { readOnlyHint: false, idempotentHint: true },
+        inputSchema: { url: z.string().describe("The video URL to transcribe (YouTube, etc.)") },
       },
       async ({ url }: { url: string }) =>
         jsonToolResponse((await backendPost(env, "/api/jobs/transcribe", { url })) as Record<string, unknown>),
@@ -28,8 +29,9 @@ export class CassandraYtMCP extends McpAgent<Env, Record<string, never>, Props> 
     this.server.registerTool(
       "job_status",
       {
-        description: "Check the current status of a transcription job.",
-        inputSchema: { job_id: z.string().describe("The queued job ID") },
+        description: "Get the status of a transcription job.",
+        annotations: { readOnlyHint: true },
+        inputSchema: { job_id: z.string().describe("The job ID returned from transcribe()") },
       },
       async ({ job_id }: { job_id: string }) =>
         jsonToolResponse((await backendGet(env, `/api/jobs/${job_id}`)) as Record<string, unknown>),
@@ -38,9 +40,10 @@ export class CassandraYtMCP extends McpAgent<Env, Record<string, never>, Props> 
     this.server.registerTool(
       "search",
       {
-        description: "Search across saved transcripts.",
+        description: "Search transcripts by content.",
+        annotations: { readOnlyHint: true },
         inputSchema: {
-          query: z.string().describe("Search terms"),
+          query: z.string().describe("Search query string"),
           limit: z.number().int().min(1).max(50).default(10),
         },
       },
@@ -53,10 +56,11 @@ export class CassandraYtMCP extends McpAgent<Env, Record<string, never>, Props> 
     this.server.registerTool(
       "list_transcripts",
       {
-        description: "Browse available transcripts.",
+        description: "List available transcripts.",
+        annotations: { readOnlyHint: true },
         inputSchema: {
-          platform: z.string().optional(),
-          channel: z.string().optional(),
+          platform: z.string().optional().describe("Filter by platform (e.g., \"youtube\")"),
+          channel: z.string().optional().describe("Filter by channel name"),
           limit: z.number().int().min(1).max(100).default(20),
         },
       },
@@ -69,12 +73,13 @@ export class CassandraYtMCP extends McpAgent<Env, Record<string, never>, Props> 
     this.server.registerTool(
       "read_transcript",
       {
-        description: "Read a transcript in markdown, text, or json form.",
+        description: "Read a transcript by video ID.",
+        annotations: { readOnlyHint: true },
         inputSchema: {
-          video_id: z.string(),
-          format: z.enum(["markdown", "text", "json"]).default("markdown"),
-          offset: z.number().int().min(0).default(0),
-          limit: z.number().int().min(1).optional(),
+          video_id: z.string().describe("The video ID to read"),
+          format: z.enum(["markdown", "text", "json"]).default("markdown").describe("Output format"),
+          offset: z.number().int().min(0).default(0).describe("Number of lines/segments to skip"),
+          limit: z.number().int().min(1).optional().describe("Max lines/segments to return"),
         },
       },
       async ({
@@ -100,9 +105,10 @@ export class CassandraYtMCP extends McpAgent<Env, Record<string, never>, Props> 
     this.server.registerTool(
       "yt_search",
       {
-        description: "Search YouTube using yt-dlp metadata discovery.",
+        description: "Search YouTube for videos.",
+        annotations: { readOnlyHint: true },
         inputSchema: {
-          query: z.string(),
+          query: z.string().describe("Search query string"),
           limit: z.number().int().min(1).max(25).default(10),
         },
       },
@@ -115,8 +121,9 @@ export class CassandraYtMCP extends McpAgent<Env, Record<string, never>, Props> 
     this.server.registerTool(
       "get_metadata",
       {
-        description: "Fetch detailed metadata for a video URL.",
-        inputSchema: { url: z.string() },
+        description: "Get full metadata for a video.",
+        annotations: { readOnlyHint: true },
+        inputSchema: { url: z.string().describe("The video URL (YouTube, etc.)") },
       },
       async ({ url }: { url: string }) =>
         jsonToolResponse(
@@ -127,9 +134,10 @@ export class CassandraYtMCP extends McpAgent<Env, Record<string, never>, Props> 
     this.server.registerTool(
       "get_comments",
       {
-        description: "Fetch top or newest comments for a video URL.",
+        description: "Get comments for a video.",
+        annotations: { readOnlyHint: true },
         inputSchema: {
-          url: z.string(),
+          url: z.string().describe("The video URL (YouTube, etc.)"),
           limit: z.number().int().min(1).max(100).default(20),
           sort: z.enum(["top", "new"]).default("top"),
         },
