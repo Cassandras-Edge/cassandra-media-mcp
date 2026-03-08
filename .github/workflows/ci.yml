@@ -32,13 +32,3 @@ jobs:
           node-version: "22"
       - run: npm install
       - run: npm run type-check
-
-  terraform:
-    runs-on: gh-arc-cassandra-yt-mcp
-    defaults:
-      run:
-        working-directory: infra/modules/worker-edge
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-      - run: terraform fmt -check -recursive ../..

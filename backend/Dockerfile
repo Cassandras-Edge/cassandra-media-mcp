@@ -30,10 +30,14 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 
+RUN python -m venv /opt/venv
+
+ENV PATH="/opt/venv/bin:${PATH}"
+
 RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir --break-system-packages \
+ && pip install --no-cache-dir \
       torch torchaudio --index-url https://download.pytorch.org/whl/cu126 \
- && pip install --no-cache-dir --break-system-packages ".[gpu]"
+ && pip install --no-cache-dir ".[gpu]"
 
 RUN mkdir -p /data && chown -R app:app /app /data
 
