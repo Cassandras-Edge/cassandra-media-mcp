@@ -39,6 +39,25 @@ def test_api_token_required(tmp_path: Path) -> None:
         assert response.status_code == 401
 
 
+def test_api_token_rejects_wrong_value(tmp_path: Path) -> None:
+    with TestClient(create_app(make_settings(tmp_path))) as client:
+        response = client.get(
+            "/api/transcripts",
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        assert response.status_code == 401
+
+
+def test_api_token_accepts_correct_value(tmp_path: Path) -> None:
+    with TestClient(create_app(make_settings(tmp_path))) as client:
+        response = client.get(
+            "/api/transcripts",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"count": 0, "items": []}
+
+
 def test_read_transcript_route(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     db = Database(settings.database_path)
@@ -75,3 +94,117 @@ def test_read_transcript_route(tmp_path: Path) -> None:
         )
         assert response.status_code == 200
         assert response.json()["video_id"] == "vid1"
+
+
+def test_read_transcript_route_returns_not_found_payload(tmp_path: Path) -> None:
+    with TestClient(create_app(make_settings(tmp_path))) as client:
+        response = client.get(
+            "/api/transcripts/missing-video",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "error": "transcript_not_found",
+            "video_id": "missing-video",
+        }
+
+
+def test_read_transcript_route_paginates_text_and_json_with_warnings(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    db = Database(settings.database_path)
+    repo = TranscriptsRepository(db)
+    transcript_dir = tmp_path / "transcripts" / "youtube" / "demo" / "vid2"
+    transcript_dir.mkdir(parents=True)
+    (transcript_dir / "transcript.md").write_text("# Demo\nline 1\nline 2\nline 3\n", encoding="utf-8")
+    (transcript_dir / "transcript.txt").write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+    (transcript_dir / "transcript.json").write_text(
+        '{"segments":[{"text":"one"},{"text":"two"},{"text":"three"}]}',
+        encoding="utf-8",
+    )
+    repo.upsert(
+        video_id="vid2",
+        normalized_url="https://youtube.com/watch?v=vid2",
+        url="https://youtube.com/watch?v=vid2",
+        path=str(transcript_dir),
+        transcript_text="line 1 line 2 line 3",
+        title="Demo",
+        channel="Channel",
+        platform="youtube",
+        duration=None,
+        upload_date=None,
+        description=None,
+        thumbnail=None,
+        view_count=None,
+        speaker_count=2,
+        word_count=3,
+        confidence=0.61,
+    )
+    db.close()
+
+    with TestClient(create_app(settings)) as client:
+        text_response = client.get(
+            "/api/transcripts/vid2?format=text&offset=1&limit=1",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        json_response = client.get(
+            "/api/transcripts/vid2?format=json&offset=1&limit=1",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        assert text_response.status_code == 200
+        assert text_response.json()["content"] == "line 2\n"
+        assert text_response.json()["lines_returned"] == 1
+        assert text_response.json()["total_lines"] == 3
+        assert any("Speaker diarization detected 2 speakers" in warning for warning in text_response.json()["warnings"])
+        assert any("Low confidence score (61%)" in warning for warning in text_response.json()["warnings"])
+
+        assert json_response.status_code == 200
+        assert json_response.json()["content"] == [{"text": "two"}]
+        assert json_response.json()["segments_returned"] == 1
+        assert json_response.json()["total_segments"] == 3
+
+
+def test_youtube_route_errors_are_shaped(tmp_path: Path) -> None:
+    with TestClient(create_app(make_settings(tmp_path))) as client:
+        runtime = client.app.state.runtime
+
+        def raise_search(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise RuntimeError("search unavailable")
+
+        def raise_metadata(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise RuntimeError("metadata unavailable")
+
+        def raise_comments(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise RuntimeError("comments unavailable")
+
+        runtime.youtube_info.search = raise_search
+        runtime.youtube_info.get_metadata = raise_metadata
+        runtime.youtube_info.get_comments = raise_comments
+
+        search_response = client.get(
+            "/api/youtube/search?query=test",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        metadata_response = client.get(
+            "/api/youtube/metadata?url=https://youtu.be/demo",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        comments_response = client.get(
+            "/api/youtube/comments?url=https://youtu.be/demo",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        assert search_response.status_code == 200
+        assert search_response.json() == {
+            "error": "search_failed",
+            "message": "search unavailable",
+        }
+        assert metadata_response.json() == {
+            "error": "metadata_failed",
+            "message": "metadata unavailable",
+        }
+        assert comments_response.json() == {
+            "error": "comments_failed",
+            "message": "comments unavailable",
+        }

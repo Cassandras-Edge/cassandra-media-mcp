@@ -111,7 +111,6 @@ class LocalTranscriber:
         return mono_path
 
     def transcribe(self, audio_path: Path) -> TranscriptResult:
-        import torch  # noqa: PLC0415
         import torchaudio  # noqa: PLC0415
 
         self._load_models()

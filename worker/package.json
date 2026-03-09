@@ -7,19 +7,25 @@
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "cf-typegen": "wrangler types",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run src/__tests__/*.unit.test.ts",
+    "test:integration": "vitest run src/__tests__/*.integration.test.ts",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.3.0",
     "@modelcontextprotocol/sdk": "^1.19.0",
     "agents": "^0.7.5",
+    "cassandra-mcp-auth": "github:DigiBugCat/cassandra-mcp-auth",
     "cassandra-observability": "github:DigiBugCat/cassandra-observability",
-    "hono": "^4.12.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^4.0.18",
     "@cloudflare/workers-types": "^4.20260227.0",
     "typescript": "5.9.3",
+    "vitest": "^4.0.18",
     "wrangler": "^4.67.0"
   }
 }

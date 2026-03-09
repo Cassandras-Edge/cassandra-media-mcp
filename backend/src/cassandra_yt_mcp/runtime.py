@@ -66,7 +66,8 @@ class BackgroundWorker:
     def stop(self, timeout_seconds: float = 10.0) -> None:
         self._stop_event.set()
         self._executor.shutdown(wait=True, cancel_futures=True)
-        self._thread.join(timeout=timeout_seconds)
+        if self._thread.is_alive():
+            self._thread.join(timeout=timeout_seconds)
 
     @property
     def is_running(self) -> bool:

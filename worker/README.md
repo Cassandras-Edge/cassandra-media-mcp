@@ -24,5 +24,9 @@ The Worker owns:
 ```bash
 npm install
 npm run type-check
+npm test
+npm run test:unit
+npm run test:integration
+npm run test:coverage
 npm run deploy
 ```
