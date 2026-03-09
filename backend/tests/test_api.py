@@ -20,6 +20,9 @@ def make_settings(tmp_path: Path) -> Settings:
         max_workers=1,
         backend_api_token="secret-token",
         enable_local_transcription=False,
+        role="standalone",
+        gpu_workers=[],
+        worker_port=3001,
     )
 
 
