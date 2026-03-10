@@ -137,8 +137,8 @@ class JobsRepository:
             )
             self.db.conn.commit()
 
-    def mark_failed(self, job_id: str, error: str, attempt: int = 0) -> None:
-        next_attempt = attempt + 1
+    def mark_failed(self, job_id: str, error: str, attempt: int = 0, *, transient: bool = False) -> None:
+        next_attempt = attempt if transient else attempt + 1
         with self.db.lock:
             if next_attempt < MAX_ATTEMPTS:
                 retries_total.inc()

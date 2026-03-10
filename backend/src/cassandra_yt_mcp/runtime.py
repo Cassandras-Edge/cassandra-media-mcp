@@ -27,7 +27,7 @@ from cassandra_yt_mcp.metrics import (
 from cassandra_yt_mcp.services.downloader import Downloader
 from cassandra_yt_mcp.services.fallback_transcriber import FallbackTranscriber
 from cassandra_yt_mcp.services.local_transcriber import LocalTranscriber
-from cassandra_yt_mcp.services.remote_transcriber import RemoteTranscriber
+from cassandra_yt_mcp.services.remote_transcriber import NoHealthyWorkerError, RemoteTranscriber
 from cassandra_yt_mcp.services.storage import StorageService
 from cassandra_yt_mcp.services.transcriber import AssemblyAITranscriber
 from cassandra_yt_mcp.services.youtube_info import YouTubeInfoService
@@ -95,8 +95,9 @@ class DownloaderWorker:
             self._download_job(job_id=job_id, url=str(job["url"]))
             jobs_total.labels(status="downloaded", transcriber="n/a").inc()
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Download failed for job %s", job_id)
-            self.jobs.mark_failed(job_id, str(exc).strip() or "Download error", attempt)
+            transient = _is_transient_error(exc)
+            logger.exception("Download %s for job %s", "transiently failed" if transient else "failed", job_id)
+            self.jobs.mark_failed(job_id, str(exc).strip() or "Download error", attempt, transient=transient)
             jobs_total.labels(status="download_failed", transcriber="n/a").inc()
         finally:
             self._active_count -= 1
@@ -188,8 +189,13 @@ class TranscribeWorker:
             transcriber_used = getattr(self.transcriber, "last_transcriber_used", "unknown")
             jobs_total.labels(status="completed", transcriber=transcriber_used).inc()
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Transcription failed for job %s", job_id)
-            self.jobs.mark_failed(job_id, str(exc).strip() or "Transcription error", attempt)
+            transient = _is_transient_error(exc)
+            logger.exception(
+                "Transcription %s for job %s",
+                "transiently failed" if transient else "failed",
+                job_id,
+            )
+            self.jobs.mark_failed(job_id, str(exc).strip() or "Transcription error", attempt, transient=transient)
             jobs_total.labels(status="failed", transcriber="unknown").inc()
             try:
                 import torch  # noqa: PLC0415
@@ -336,8 +342,9 @@ class BackgroundWorker:
             transcriber_used = getattr(self.transcriber, "last_transcriber_used", "unknown")
             jobs_total.labels(status="completed", transcriber=transcriber_used).inc()
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Job %s failed", job_id)
-            self.jobs.mark_failed(job_id, str(exc).strip() or "Unknown worker error", attempt)
+            transient = _is_transient_error(exc)
+            logger.exception("Job %s %s", job_id, "transiently failed" if transient else "failed")
+            self.jobs.mark_failed(job_id, str(exc).strip() or "Unknown worker error", attempt, transient=transient)
             jobs_total.labels(status="failed", transcriber="unknown").inc()
             try:
                 import torch  # noqa: PLC0415
@@ -419,6 +426,25 @@ class BackgroundWorker:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """Transient errors don't count toward the retry limit."""
+    if isinstance(exc, NoHealthyWorkerError):
+        return True
+    msg = str(exc).lower()
+    transient_patterns = (
+        "server disconnected",
+        "connection refused",
+        "connection reset",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "502",
+        "503",
+        "504",
+    )
+    return any(p in msg for p in transient_patterns)
 
 
 def _as_str(value: object) -> str | None:
