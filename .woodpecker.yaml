@@ -20,14 +20,23 @@ steps:
 
   # ── Deploy: Docker images (push to main only) ──
 
+  - name: docker
+    image: docker:dind
+    detached: true
+    privileged: true
+    commands:
+      - dockerd --host=tcp://0.0.0.0:2375 --host=unix:///var/run/docker.sock --insecure-registry=172.20.0.161:30500
+
   - name: build-coordinator
-    image: docker
+    image: docker:cli
     when:
       - event: push
         branch: main
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on: [docker]
+    environment:
+      DOCKER_HOST: 'tcp://docker:2375'
     commands:
+      - until docker info 2>/dev/null; do sleep 1; done
       - |
         SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-7)
         docker build \
@@ -40,16 +49,17 @@ steps:
         docker push 172.20.0.161:30500/cassandra-yt-mcp/coordinator:$SHORT_SHA
 
   - name: build-worker
-    image: docker
+    image: docker:cli
     when:
       - event: push
         branch: main
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on: [docker]
     environment:
+      DOCKER_HOST: 'tcp://docker:2375'
       HUGGINGFACE_TOKEN:
         from_secret: huggingface_token
     commands:
+      - until docker info 2>/dev/null; do sleep 1; done
       - |
         SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-7)
         REGISTRY=172.20.0.161:30500
@@ -92,7 +102,8 @@ steps:
     when:
       - event: push
         branch: main
-        path: "worker/**"
+        path:
+          include: ['worker/**']
     environment:
       CLOUDFLARE_API_TOKEN:
         from_secret: cloudflare_api_token
