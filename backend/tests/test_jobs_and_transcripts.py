@@ -24,6 +24,8 @@ def make_settings(tmp_path: Path) -> Settings:
         worker_port=3001,
         download_concurrency=2,
         downloader_port=3002,
+        ytdlp_cookies=None,
+        ytdlp_cookies_file=None,
     )
 
 
@@ -103,12 +105,12 @@ def test_enqueue_transcription_deduplicates_completed_transcripts(tmp_path: Path
     finally:
         runtime.close()
 
-    assert result == {
-        "status": "completed",
-        "deduplicated": True,
-        "video_id": "vid1",
-        "transcript_path": "/tmp/vid1",
-    }
+    assert result["status"] == "completed"
+    assert result["deduplicated"] is True
+    assert result["video_id"] == "vid1"
+    assert result["transcript_path"] == "/tmp/vid1"
+    assert "metadata" in result
+    assert result["metadata"]["title"] == "Demo title"
 
 
 def test_enqueue_transcription_deduplicates_active_jobs(tmp_path: Path) -> None:

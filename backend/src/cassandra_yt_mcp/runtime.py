@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import shutil
@@ -433,6 +434,10 @@ def _is_transient_error(exc: Exception) -> bool:
     if isinstance(exc, NoHealthyWorkerError):
         return True
     msg = str(exc).lower()
+    # Auth/cookie errors are permanent — won't resolve without human intervention
+    permanent_patterns = ("sign in", "confirm you're not a bot", "cookies", "authentication")
+    if any(p in msg for p in permanent_patterns):
+        return False
     transient_patterns = (
         "server disconnected",
         "connection refused",
@@ -479,9 +484,12 @@ class AppRuntime:
         self.database = Database(settings.database_path)
         self.jobs = JobsRepository(self.database)
         self.transcripts = TranscriptsRepository(self.database)
-        self.downloader = Downloader(settings.data_dir / "_work")
         self.storage = StorageService(settings.data_dir)
-        self.youtube_info = YouTubeInfoService()
+
+        # Set up yt-dlp cookie file from base64-encoded env var
+        cookies_file = self._setup_cookies(settings)
+        self.downloader = Downloader(settings.data_dir / "_work", cookies_file=cookies_file)
+        self.youtube_info = YouTubeInfoService(cookies_file=cookies_file)
 
         if settings.role == "coordinator":
             self.transcriber = self._build_transcriber(settings)
@@ -515,6 +523,19 @@ class AppRuntime:
     def close(self) -> None:
         self.worker.stop()
         self.database.close()
+
+    @staticmethod
+    def _setup_cookies(settings: Settings) -> Path | None:
+        if not settings.ytdlp_cookies:
+            return None
+        cookies_path = settings.data_dir / "_cookies.txt"
+        try:
+            cookies_path.write_bytes(base64.b64decode(settings.ytdlp_cookies))
+            logger.info("Wrote yt-dlp cookies to %s", cookies_path)
+            return cookies_path
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to decode YTDLP_COOKIES")
+            return None
 
     @staticmethod
     def _build_transcriber(settings: Settings) -> object:
@@ -559,6 +580,7 @@ class AppRuntime:
                 "deduplicated": True,
                 "video_id": existing["video_id"],
                 "transcript_path": existing["path"],
+                "metadata": existing,
             }
         active = self.jobs.find_active_by_normalized_url(normalized_url)
         if active is not None:
@@ -569,7 +591,12 @@ class AppRuntime:
             }
         job = self.jobs.enqueue(url=url, normalized_url=normalized_url)
         jobs_queued.inc()
-        return {"job_id": job["id"], "status": job["status"], "deduplicated": False}
+        result: dict[str, object] = {"job_id": job["id"], "status": job["status"], "deduplicated": False}
+        try:
+            result["metadata"] = self.youtube_info.get_metadata(url)
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not fetch metadata for %s at enqueue time", url)
+        return result
 
     def _enqueue_playlist(self, url: str) -> dict[str, object]:
         try:
@@ -623,7 +650,8 @@ class DownloaderRuntime:
         self.settings = settings
         self.database = Database(settings.database_path)
         self.jobs = JobsRepository(self.database)
-        self.downloader = Downloader(settings.data_dir / "_work")
+        cookies_file = AppRuntime._setup_cookies(settings)
+        self.downloader = Downloader(settings.data_dir / "_work", cookies_file=cookies_file)
         self.worker = DownloaderWorker(
             jobs=self.jobs,
             downloader=self.downloader,

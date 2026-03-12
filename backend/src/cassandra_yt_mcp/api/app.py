@@ -108,7 +108,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, object]:
         transcript = runtime.transcripts.get_by_video_id(video_id)
         if transcript is None:
-            return {"error": "transcript_not_found", "video_id": video_id}
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            transcription = runtime.enqueue_transcription(url)
+            return {
+                "auto_transcribe": True,
+                "video_id": video_id,
+                "transcription": transcription,
+            }
 
         warnings = _transcript_warnings(transcript)
         base = Path(str(transcript["path"]))
@@ -125,7 +131,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "offset": offset,
                 "lines_returned": len(page),
                 "warnings": warnings,
-                "metadata": transcript,
             }
 
         payload = (base / "transcript.json").read_text(encoding="utf-8")
@@ -142,7 +147,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "offset": offset,
             "segments_returned": len(page),
             "warnings": warnings,
-            "metadata": transcript,
         }
 
     @app.get("/api/youtube/search", dependencies=[Depends(require_api_token)])

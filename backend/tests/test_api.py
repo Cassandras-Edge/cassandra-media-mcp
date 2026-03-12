@@ -25,6 +25,8 @@ def make_settings(tmp_path: Path) -> Settings:
         worker_port=3001,
         download_concurrency=2,
         downloader_port=3002,
+        ytdlp_cookies=None,
+        ytdlp_cookies_file=None,
     )
 
 
@@ -98,7 +100,7 @@ def test_read_transcript_route(tmp_path: Path) -> None:
         assert response.json()["video_id"] == "vid1"
 
 
-def test_read_transcript_route_returns_not_found_payload(tmp_path: Path) -> None:
+def test_read_transcript_auto_transcribes_when_not_found(tmp_path: Path) -> None:
     with TestClient(create_app(make_settings(tmp_path))) as client:
         response = client.get(
             "/api/transcripts/missing-video",
@@ -106,10 +108,11 @@ def test_read_transcript_route_returns_not_found_payload(tmp_path: Path) -> None
         )
 
         assert response.status_code == 200
-        assert response.json() == {
-            "error": "transcript_not_found",
-            "video_id": "missing-video",
-        }
+        data = response.json()
+        assert data["auto_transcribe"] is True
+        assert data["video_id"] == "missing-video"
+        assert "transcription" in data
+        assert data["transcription"]["status"] == "queued"
 
 
 def test_read_transcript_route_paginates_text_and_json_with_warnings(tmp_path: Path) -> None:

@@ -8,9 +8,10 @@ from cassandra_yt_mcp.types import DownloadResult
 
 
 class Downloader:
-    def __init__(self, work_root: Path) -> None:
+    def __init__(self, work_root: Path, *, cookies_file: Path | None = None) -> None:
         self.work_root = work_root
         self.work_root.mkdir(parents=True, exist_ok=True)
+        self.cookies_file = cookies_file
 
     def download(self, *, url: str, job_id: str) -> DownloadResult:
         job_dir = self.work_root / job_id
@@ -29,8 +30,10 @@ class Downloader:
             "-x",
             "-o",
             output_template,
-            url,
         ]
+        if self.cookies_file:
+            cmd.extend(["--cookies", str(self.cookies_file)])
+        cmd.append(url)
 
         try:
             completed = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=600)
@@ -59,8 +62,10 @@ class Downloader:
             "--dump-json",
             "--no-download",
             "--no-warnings",
-            url,
         ]
+        if self.cookies_file:
+            cmd.extend(["--cookies", str(self.cookies_file)])
+        cmd.append(url)
 
         try:
             completed = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)

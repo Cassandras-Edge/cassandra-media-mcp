@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from typing import Any
 
 
 class YouTubeInfoService:
+    def __init__(self, *, cookies_file: Path | None = None) -> None:
+        self.cookies_file = cookies_file
+
     _METADATA_KEYS = [
         "id",
         "title",
@@ -29,8 +33,9 @@ class YouTubeInfoService:
         "subtitles",
     ]
 
-    @staticmethod
-    def _run_ytdlp(cmd: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    def _run_ytdlp(self, cmd: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+        if self.cookies_file:
+            cmd = [*cmd, "--cookies", str(self.cookies_file)]
         try:
             completed = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
