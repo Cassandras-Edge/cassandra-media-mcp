@@ -68,7 +68,7 @@ steps:
       - event: push
         branch: main
         path:
-          include: ['backend/**']
+          include: ['backend/Dockerfile', 'backend/pyproject.toml']
     environment:
       HUGGINGFACE_TOKEN:
         from_secret: huggingface_token
