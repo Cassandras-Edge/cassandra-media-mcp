@@ -30,6 +30,12 @@ gpu = [
   "torch>=2.2.0",
   "torchaudio>=2.2.0",
 ]
+onnx = [
+  "onnx-asr[gpu,hub]",
+  "soundfile",
+  "scipy",
+  "scikit-learn",
+]
 
 [project.scripts]
 cassandra-yt-mcp-backend = "cassandra_yt_mcp.main:cli"

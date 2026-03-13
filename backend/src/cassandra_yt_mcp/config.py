@@ -26,6 +26,7 @@ class Settings:
     downloader_port: int  # Port for downloader healthz (downloader mode)
     ytdlp_cookies: str | None  # Base64-encoded Netscape cookies file content
     ytdlp_cookies_file: Path | None  # Resolved path to cookies file (written at startup)
+    transcription_engine: str  # "onnx" | "nemo"
 
 
 def _as_int(name: str, default: int) -> int:
@@ -68,4 +69,5 @@ def load_settings() -> Settings:
         downloader_port=_as_int("DOWNLOADER_PORT", 3002),
         ytdlp_cookies=os.getenv("YTDLP_COOKIES", "").strip() or None,
         ytdlp_cookies_file=None,  # resolved at runtime startup
+        transcription_engine=os.getenv("TRANSCRIPTION_ENGINE", "onnx").lower(),
     )

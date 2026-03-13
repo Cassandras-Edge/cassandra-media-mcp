@@ -86,6 +86,25 @@ steps:
         --cache-repo=172.20.0.161:30500/cassandra-yt-mcp/backend-cache
         --insecure-registry=172.20.0.161:30500
 
+  - name: build-worker-onnx
+    image: gcr.io/kaniko-project/executor:debug
+    when:
+      - event: push
+        branch: main
+        path:
+          include: ['backend/Dockerfile.onnx', 'backend/pyproject.toml', 'backend/src/**']
+    commands:
+      - >
+        /kaniko/executor
+        --dockerfile=backend/Dockerfile.onnx
+        --context=backend
+        --destination=172.20.0.161:30500/cassandra-yt-mcp/backend-onnx:latest
+        --destination=172.20.0.161:30500/cassandra-yt-mcp/backend-onnx:${CI_COMMIT_SHA:0:7}
+        --insecure
+        --cache=true
+        --cache-repo=172.20.0.161:30500/cassandra-yt-mcp/backend-onnx-cache
+        --insecure-registry=172.20.0.161:30500
+
   # ── Deploy: CF Worker (push to main, only when worker/ changed) ──
 
   - name: deploy-cf-worker

@@ -14,9 +14,23 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile, status
 
 from cassandra_yt_mcp.config import Settings, load_settings
-from cassandra_yt_mcp.services.local_transcriber import LocalTranscriber
 
 logger = logging.getLogger(__name__)
+
+
+def _create_transcriber(settings: Settings) -> object:
+    """Instantiate transcriber based on TRANSCRIPTION_ENGINE setting."""
+    engine = settings.transcription_engine
+    if engine == "onnx":
+        from cassandra_yt_mcp.services.onnx_transcriber import OnnxTranscriber  # noqa: PLC0415
+
+        logger.info("Using ONNX transcription engine")
+        return OnnxTranscriber(use_gpu=True)
+    else:
+        from cassandra_yt_mcp.services.local_transcriber import LocalTranscriber  # noqa: PLC0415
+
+        logger.info("Using NeMo transcription engine")
+        return LocalTranscriber(huggingface_token=settings.huggingface_token)
 
 
 def create_worker_app(settings: Settings | None = None) -> FastAPI:
@@ -24,13 +38,11 @@ def create_worker_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        transcriber = LocalTranscriber(
-            huggingface_token=app_settings.huggingface_token,
-        )
+        transcriber = _create_transcriber(app_settings)
         # Warm models into VRAM on startup
-        transcriber._load_models()
+        transcriber._load_models()  # type: ignore[attr-defined]
         app.state.transcriber = transcriber
-        logger.info("Worker ready — models loaded")
+        logger.info("Worker ready — models loaded (%s engine)", app_settings.transcription_engine)
         try:
             yield
         finally:
@@ -40,7 +52,7 @@ def create_worker_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/worker/healthz")
     def healthz() -> dict[str, object]:
-        transcriber: LocalTranscriber = app.state.transcriber
+        transcriber = app.state.transcriber
         gpu_info: dict[str, object] = {"available": False}
         try:
             import torch  # noqa: PLC0415
@@ -50,13 +62,26 @@ def create_worker_app(settings: Settings | None = None) -> FastAPI:
                 gpu_info["device"] = torch.cuda.get_device_name(0)
                 vram = torch.cuda.get_device_properties(0).total_mem
                 gpu_info["vram_gb"] = round(vram / (1024**3), 1)
-        except Exception:  # noqa: BLE001
-            pass
+        except ImportError:
+            # ONNX engine doesn't have torch — check CUDA via onnxruntime
+            try:
+                import onnxruntime as ort  # noqa: PLC0415
+
+                providers = ort.get_available_providers()
+                gpu_info["available"] = "CUDAExecutionProvider" in providers
+            except Exception:  # noqa: BLE001
+                pass
+
+        model_loaded = getattr(transcriber, "_asr_model", None) is not None
+        # OnnxTranscriber uses model_loaded property
+        if hasattr(transcriber, "model_loaded"):
+            model_loaded = transcriber.model_loaded  # type: ignore[union-attr]
 
         return {
             "ok": True,
+            "engine": app_settings.transcription_engine,
             "gpu": gpu_info,
-            "model_loaded": transcriber._asr_model is not None,
+            "model_loaded": model_loaded,
         }
 
     @app.post("/worker/transcribe")
@@ -67,13 +92,13 @@ def create_worker_app(settings: Settings | None = None) -> FastAPI:
                 detail="No audio file provided",
             )
 
-        transcriber: LocalTranscriber = app.state.transcriber
+        transcriber = app.state.transcriber
 
-        # Write uploaded audio to temp file
+        # Stream uploaded audio to temp file (avoid buffering entire file in RAM)
         suffix = Path(audio.filename).suffix or ".wav"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            content = await audio.read()
-            tmp.write(content)
+            while chunk := await audio.read(1024 * 1024):  # 1MB chunks
+                tmp.write(chunk)
             tmp_path = Path(tmp.name)
 
         try:
