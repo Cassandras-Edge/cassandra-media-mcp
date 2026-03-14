@@ -62,7 +62,7 @@ def create_worker_app(settings: Settings | None = None) -> FastAPI:
             gpu_info["available"] = torch.cuda.is_available()
             if torch.cuda.is_available():
                 gpu_info["device"] = torch.cuda.get_device_name(0)
-                vram = torch.cuda.get_device_properties(0).total_mem
+                vram = torch.cuda.get_device_properties(0).total_memory
                 gpu_info["vram_gb"] = round(vram / (1024**3), 1)
         except ImportError:
             # ONNX engine doesn't have torch — check CUDA via onnxruntime
