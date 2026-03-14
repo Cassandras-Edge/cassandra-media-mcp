@@ -269,7 +269,7 @@ class OnnxTranscriber:
         # Feed audio through VAD in chunks
         window_size = 512  # Silero VAD expects 512 samples at 16kHz
         vad = self._vad
-        vad.clear()
+        vad.reset()
 
         idx = 0
         while idx + window_size <= len(samples):
