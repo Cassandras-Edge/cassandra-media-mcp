@@ -153,14 +153,22 @@ class OnnxTranscriber:
 
     def _process_single(self, mono_path: Path) -> TranscriptResult:
         """Process a short audio file (< ~10 min) in one pass."""
+        import time  # noqa: PLC0415
+
         # ASR
+        t0 = time.monotonic()
         raw_segments, text, detected_lang = self._run_asr(mono_path, offset_secs=0.0)
+        t_asr = time.monotonic() - t0
+        logger.info("ASR completed in %.1fs (%d segments)", t_asr, len(raw_segments))
         gc.collect()
 
         self._check_language(detected_lang, text)
 
         # Diarization
+        t0 = time.monotonic()
         speaker_turns = self._diarization(str(mono_path))  # type: ignore[misc]
+        t_diar = time.monotonic() - t0
+        logger.info("Diarization completed in %.1fs (%d turns)", t_diar, len(speaker_turns))
         gc.collect()
 
         return TranscriptResult(
@@ -252,8 +260,12 @@ class OnnxTranscriber:
         self, audio_path: Path, *, offset_secs: float,
     ) -> tuple[list[dict[str, object]], str, str | None]:
         """Run VAD + batched ASR via sherpa-onnx. Returns (segments, text, detected_lang)."""
+        import time  # noqa: PLC0415
+
         assert self._recognizer is not None
         assert self._vad is not None
+
+        t_start = time.monotonic()
 
         # Read audio as float32 mono 16kHz
         samples, sr = sf.read(str(audio_path), dtype="float32")
@@ -288,10 +300,12 @@ class OnnxTranscriber:
             vad_segments.append((seg_start_secs, seg_samples))
             vad.pop()
 
+        t_vad = time.monotonic() - t_start
+
         if not vad_segments:
             return [], "", None
 
-        logger.info("VAD detected %d speech segments", len(vad_segments))
+        logger.info("VAD completed in %.1fs — %d speech segments", t_vad, len(vad_segments))
 
         # Create streams and batch-decode
         streams: list[sherpa_onnx.OfflineStream] = []
@@ -306,7 +320,10 @@ class OnnxTranscriber:
             segment_durations.append(len(seg_samples) / _SAMPLE_RATE)
 
         # BATCHED GPU inference — single call for all segments
+        t_decode_start = time.monotonic()
         self._recognizer.decode_streams(streams)
+        t_decode = time.monotonic() - t_decode_start
+        logger.info("decode_streams completed in %.1fs (%d streams)", t_decode, len(streams))
 
         # Extract results
         raw_segments: list[dict[str, object]] = []
