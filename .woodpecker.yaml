@@ -27,14 +27,13 @@ steps:
       - npm run type-check
 
   # ── Deploy: Docker images via BuildKit (push to main only) ──
+  # Builds always run — BuildKit layer cache makes no-op rebuilds fast.
 
   - name: build-coordinator
     image: moby/buildkit:v0.21.1
     when:
       - event: push
         branch: main
-        path:
-          include: ['backend/Dockerfile.coordinator', 'backend/pyproject.toml', 'backend/src/**']
     commands:
       - >
         buildctl
@@ -52,8 +51,6 @@ steps:
     when:
       - event: push
         branch: main
-        path:
-          include: ['backend/Dockerfile.coordinator', 'backend/pyproject.toml', 'backend/src/**']
     commands:
       - kubectl rollout restart deployment cassandra-yt-mcp -n cassandra-yt-mcp
       - kubectl rollout restart deployment cassandra-yt-mcp-downloader -n cassandra-yt-mcp || true
@@ -83,8 +80,6 @@ steps:
     when:
       - event: push
         branch: main
-        path:
-          include: ['backend/Dockerfile', 'backend/pyproject.toml', 'backend/src/**']
     environment:
       HF_TOKEN:
         from_secret: hf_token
@@ -105,8 +100,6 @@ steps:
     when:
       - event: push
         branch: main
-        path:
-          include: ['backend/Dockerfile', 'backend/pyproject.toml', 'backend/src/**']
     commands:
       - kubectl rollout restart deployment cassandra-yt-mcp-worker -n cassandra-yt-mcp
 
