@@ -45,7 +45,7 @@ steps:
         --local dockerfile=backend
         --opt filename=Dockerfile.coordinator
         --opt build-arg:YTDLP_CHANNEL=stable
-        --output type=image,"name=172.20.0.161:30500/cassandra-yt-mcp/coordinator:latest,172.20.0.161:30500/cassandra-yt-mcp/coordinator:${CI_COMMIT_SHA:0:7}",push=true,registry.insecure=true
+        --output type=image,name=172.20.0.161:30500/cassandra-yt-mcp/coordinator:latest,push=true,registry.insecure=true
 
   # ── Cron: rebuild coordinator with latest yt-dlp stable (no cache) ──
 
@@ -83,7 +83,7 @@ steps:
         --local context=backend
         --local dockerfile=backend
         --opt filename=Dockerfile.onnx
-        --output type=image,"name=172.20.0.161:30500/cassandra-yt-mcp/backend-onnx:latest,172.20.0.161:30500/cassandra-yt-mcp/backend-onnx:${CI_COMMIT_SHA:0:7}",push=true,registry.insecure=true
+        --output type=image,name=172.20.0.161:30500/cassandra-yt-mcp/backend-onnx:latest,push=true,registry.insecure=true
 
   # ── Deploy: CF Worker (push to main, only when worker/ changed) ──
 
