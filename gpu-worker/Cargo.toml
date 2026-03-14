@@ -1,0 +1,17 @@
+[package]
+name = "yt-mcp-gpu-worker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+parakeet-rs = { version = "0.3", features = ["cuda", "sortformer"] }
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hound = "3.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tempfile = "3"
+eyre = "0.6"

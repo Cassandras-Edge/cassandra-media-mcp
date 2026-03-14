@@ -74,25 +74,20 @@ steps:
         --opt no-cache=
         --output type=image,name=172.20.0.161:30500/cassandra-yt-mcp/coordinator:latest,push=true,registry.insecure=true
 
-  - name: build-worker-nemo
+  - name: build-worker-rust
     image: moby/buildkit:v0.21.1
     when:
       - event: push
         branch: main
-    environment:
-      HF_TOKEN:
-        from_secret: hf_token
     commands:
       - >
         buildctl
         --addr tcp://buildkitd.buildkitd.svc.cluster.local:1234
         build
         --frontend dockerfile.v0
-        --local context=backend
-        --local dockerfile=backend
-        --opt filename=Dockerfile
-        --opt build-arg:HUGGINGFACE_TOKEN=$HF_TOKEN
-        --output type=image,name=172.20.0.161:30500/cassandra-yt-mcp/backend:latest,push=true,registry.insecure=true
+        --local context=gpu-worker
+        --local dockerfile=gpu-worker
+        --output type=image,name=172.20.0.161:30500/cassandra-yt-mcp/gpu-worker:latest,push=true,registry.insecure=true
 
   - name: restart-worker
     image: bitnami/kubectl:latest
