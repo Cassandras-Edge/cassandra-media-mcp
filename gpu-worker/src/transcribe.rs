@@ -43,10 +43,6 @@ impl TranscribeEngine {
         Ok(Self { tdt, sortformer })
     }
 
-    pub fn is_loaded(&self) -> bool {
-        true // models are loaded in constructor
-    }
-
     pub fn transcribe(&mut self, wav_path: &Path) -> Result<TranscribeResult> {
         let (audio, spec) = load_wav(wav_path)?;
         let duration_secs = audio.len() as f32 / SAMPLE_RATE as f32;

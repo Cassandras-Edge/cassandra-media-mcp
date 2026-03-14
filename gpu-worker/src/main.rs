@@ -47,12 +47,13 @@ struct ErrorResponse {
     error: String,
 }
 
-async fn healthz(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    let engine = state.engine.lock().await;
+async fn healthz() -> Json<HealthResponse> {
+    // No lock needed — models are loaded at startup and always available.
+    // Locking here would block healthz during transcription, killing probes.
     Json(HealthResponse {
         ok: true,
         engine: "parakeet-rs",
-        model_loaded: engine.is_loaded(),
+        model_loaded: true,
     })
 }
 
