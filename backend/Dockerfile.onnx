@@ -25,7 +25,9 @@ RUN pip install --no-cache-dir --upgrade pip \
       scikit-learn
 
 # Pre-download models into the image (CPU-only at build time, no GPU available)
-ENV HF_HOME=/opt/hf_cache
+ARG HF_TOKEN
+ENV HF_HOME=/opt/hf_cache \
+    HF_TOKEN=${HF_TOKEN}
 
 RUN python -c "\
 import onnx_asr; \

@@ -74,6 +74,9 @@ steps:
         branch: main
         path:
           include: ['backend/Dockerfile.onnx', 'backend/pyproject.toml', 'backend/src/**']
+    environment:
+      HF_TOKEN:
+        from_secret: hf_token
     commands:
       - >
         buildctl
@@ -83,6 +86,7 @@ steps:
         --local context=backend
         --local dockerfile=backend
         --opt filename=Dockerfile.onnx
+        --opt build-arg:HF_TOKEN=$HF_TOKEN
         --output type=image,name=172.20.0.161:30500/cassandra-yt-mcp/backend-onnx:latest,push=true,registry.insecure=true
 
   # ── Deploy: CF Worker (push to main, only when worker/ changed) ──
