@@ -31,8 +31,7 @@ gpu = [
   "torchaudio>=2.2.0",
 ]
 onnx = [
-  "onnx-asr[gpu,hub]",
-  "tensorrt-cu12",
+  "numpy",
   "soundfile",
   "scipy",
   "scikit-learn",

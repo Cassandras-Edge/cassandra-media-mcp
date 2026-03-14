@@ -1,6 +1,6 @@
-"""ONNX-based transcriber using onnx-asr + ONNX diarization.
+"""ONNX-based transcriber using sherpa-onnx + ONNX diarization.
 
-Replaces NeMo/PyTorch with pure ONNX inference. ~2GB RAM vs ~6GB.
+Uses sherpa-onnx for batched GPU inference via decode_streams().
 Long audio is split into physical chunks on disk to bound memory.
 """
 
@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import gc
 import logging
+import os
 import subprocess
 import unicodedata
 from pathlib import Path
 
+import numpy as np
+import sherpa_onnx
 import soundfile as sf
 
 from cassandra_yt_mcp.services.onnx_diarization import OnnxDiarization
@@ -28,7 +31,8 @@ SUPPORTED_LANGUAGES: frozenset[str] = frozenset(
     }
 )
 _EUROPEAN_SCRIPTS: frozenset[str] = frozenset({"LATIN", "CYRILLIC", "GREEK"})
-_PARAKEET_MODEL = "nemo-parakeet-tdt-0.6b-v3"
+
+_SAMPLE_RATE = 16000
 
 # Chunk long audio into segments of this duration (seconds).
 # Each chunk is written to disk and processed independently.
@@ -37,56 +41,59 @@ _OVERLAP_SECONDS = 10  # overlap for diarization continuity
 
 
 class OnnxTranscriber:
-    """Transcriber using onnx-asr (Parakeet TDT) + ONNX diarization."""
+    """Transcriber using sherpa-onnx (Parakeet TDT) + ONNX diarization."""
 
     def __init__(self, *, use_gpu: bool = True) -> None:
         self._use_gpu = use_gpu
-        self._asr_model: object | None = None
+        self._recognizer: sherpa_onnx.OfflineRecognizer | None = None
+        self._vad: sherpa_onnx.VoiceActivityDetector | None = None
         self._diarization: OnnxDiarization | None = None
 
     def _load_models(self) -> None:
-        if self._asr_model is not None:
+        if self._recognizer is not None:
             return
 
-        import onnx_asr  # noqa: PLC0415
-
-        providers: list | None = None
-        if self._use_gpu:
-            import os  # noqa: PLC0415
-
-            trt_cache = os.environ.get("TRT_ENGINE_CACHE_PATH", "/data/trt_cache")
-            os.makedirs(trt_cache, exist_ok=True)
-            providers = [
-                ("TensorrtExecutionProvider", {
-                    "trt_fp16_enable": True,
-                    "trt_engine_cache_enable": True,
-                    "trt_engine_cache_path": trt_cache,
-                }),
-                "CUDAExecutionProvider",
-                "CPUExecutionProvider",
-            ]
-
-        # VAD uses a simple model that TensorRT can't handle (missing shape info).
-        # Use CUDA for VAD, TensorRT only for the heavy ASR model.
-        cuda_providers: list[str] = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        logger.info("Loading onnx-asr model: %s (TensorRT FP16 preferred)", _PARAKEET_MODEL)
-        vad = onnx_asr.load_vad("silero", providers=cuda_providers)
-        model = onnx_asr.load_model(
-            _PARAKEET_MODEL,
-            providers=providers,
+        models_dir = os.environ.get(
+            "SHERPA_MODELS_DIR",
+            "/opt/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
         )
-        self._asr_model = model.with_timestamps().with_vad(vad)
-        logger.info("onnx-asr model loaded")
+        vad_model = os.environ.get("SILERO_VAD_MODEL", "/opt/models/silero_vad.onnx")
+        provider = "cuda" if self._use_gpu else "cpu"
+
+        logger.info("Loading sherpa-onnx recognizer from %s (provider=%s)", models_dir, provider)
+        self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+            encoder=f"{models_dir}/encoder.int8.onnx",
+            decoder=f"{models_dir}/decoder.int8.onnx",
+            joiner=f"{models_dir}/joiner.int8.onnx",
+            tokens=f"{models_dir}/tokens.txt",
+            provider=provider,
+            model_type="nemo_transducer",
+            num_threads=4,
+        )
+        logger.info("sherpa-onnx recognizer loaded")
+
+        logger.info("Loading Silero VAD from %s", vad_model)
+        vad_config = sherpa_onnx.VadModelConfig()
+        vad_config.silero_vad.model = vad_model
+        vad_config.silero_vad.min_silence_duration = 0.25
+        vad_config.silero_vad.min_speech_duration = 0.25
+        vad_config.sample_rate = _SAMPLE_RATE
+        vad_config.provider = provider
+        self._vad = sherpa_onnx.VoiceActivityDetector(vad_config, buffer_size_in_seconds=30)
+        logger.info("Silero VAD loaded")
 
         logger.info("Loading ONNX diarization models")
-        # Diarization uses simpler models — CUDA is sufficient, TRT overhead not worth it
-        diar_providers: list[str] = ["CUDAExecutionProvider", "CPUExecutionProvider"] if self._use_gpu else ["CPUExecutionProvider"]
+        diar_providers: list[str] = (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if self._use_gpu
+            else ["CPUExecutionProvider"]
+        )
         self._diarization = OnnxDiarization(providers=diar_providers)
         logger.info("ONNX diarization models loaded")
 
     @property
     def model_loaded(self) -> bool:
-        return self._asr_model is not None
+        return self._recognizer is not None
 
     @staticmethod
     def _to_wav(audio_path: Path) -> Path:
@@ -246,24 +253,85 @@ class OnnxTranscriber:
     def _run_asr(
         self, audio_path: Path, *, offset_secs: float,
     ) -> tuple[list[dict[str, object]], str, str | None]:
-        """Run ASR on a single audio file. Returns (segments, text, detected_lang)."""
-        segments_iter = self._asr_model.recognize(str(audio_path))  # type: ignore[union-attr]
+        """Run VAD + batched ASR via sherpa-onnx. Returns (segments, text, detected_lang)."""
+        assert self._recognizer is not None
+        assert self._vad is not None
 
+        # Read audio as float32 mono 16kHz
+        samples, sr = sf.read(str(audio_path), dtype="float32")
+        if len(samples.shape) > 1:
+            samples = samples[:, 0]  # take first channel
+        if sr != _SAMPLE_RATE:
+            # Should already be 16kHz from _transcribe_wav, but guard
+            import scipy.signal  # noqa: PLC0415
+            samples = scipy.signal.resample_poly(
+                samples, _SAMPLE_RATE, sr,
+            ).astype(np.float32)
+
+        # Feed audio through VAD in chunks
+        window_size = 512  # Silero VAD expects 512 samples at 16kHz
+        vad = self._vad
+        vad.clear()
+
+        idx = 0
+        while idx + window_size <= len(samples):
+            vad.accept_waveform(samples[idx : idx + window_size])
+            idx += window_size
+
+        # Flush remaining samples
+        vad.flush()
+
+        # Collect all VAD segments
+        vad_segments: list[tuple[float, np.ndarray]] = []
+        while not vad.empty():
+            seg = vad.front()
+            seg_start_secs = seg.start / _SAMPLE_RATE
+            seg_samples = np.array(seg.samples, dtype=np.float32)
+            vad_segments.append((seg_start_secs, seg_samples))
+            vad.pop()
+
+        if not vad_segments:
+            return [], "", None
+
+        logger.info("VAD detected %d speech segments", len(vad_segments))
+
+        # Create streams and batch-decode
+        streams: list[sherpa_onnx.OfflineStream] = []
+        segment_offsets: list[float] = []
+        segment_durations: list[float] = []
+
+        for seg_start_secs, seg_samples in vad_segments:
+            s = self._recognizer.create_stream()
+            s.accept_waveform(_SAMPLE_RATE, seg_samples.tolist())
+            streams.append(s)
+            segment_offsets.append(seg_start_secs + offset_secs)
+            segment_durations.append(len(seg_samples) / _SAMPLE_RATE)
+
+        # BATCHED GPU inference — single call for all segments
+        self._recognizer.decode_streams(streams)
+
+        # Extract results
         raw_segments: list[dict[str, object]] = []
         all_text_parts: list[str] = []
-        detected_lang: str | None = None
 
-        if not isinstance(segments_iter, list):
-            segments_iter = list(segments_iter)
-
-        for seg_result in segments_iter:
-            seg_text = seg_result.text.strip() if seg_result.text else ""
+        for stream, seg_offset, seg_dur in zip(streams, segment_offsets, segment_durations):
+            result = stream.result
+            seg_text = result.text.strip() if result.text else ""
             if not seg_text:
                 continue
             all_text_parts.append(seg_text)
 
-            start = float(getattr(seg_result, "start", 0.0)) + offset_secs
-            end = float(getattr(seg_result, "end", 0.0)) + offset_secs
+            # Use word-level timestamps if available, else segment boundaries
+            if result.timestamps:
+                start = result.timestamps[0] + seg_offset
+                end = result.timestamps[-1] + seg_offset
+                # Add estimated duration of last token
+                if result.timestamps and len(result.timestamps) > 1:
+                    avg_dur = (result.timestamps[-1] - result.timestamps[0]) / len(result.timestamps)
+                    end += avg_dur
+            else:
+                start = seg_offset
+                end = seg_offset + seg_dur
 
             raw_segments.append({
                 "text": seg_text,
@@ -271,13 +339,10 @@ class OnnxTranscriber:
                 "end": end,
             })
 
-            if detected_lang is None:
-                lang = getattr(seg_result, "lang", None) or getattr(seg_result, "language", None)
-                if lang and isinstance(lang, str):
-                    detected_lang = lang.strip().lower()[:2] or None
-
-        del segments_iter
+        del streams, vad_segments
         text = " ".join(all_text_parts)
+        # Parakeet is English-only; sherpa-onnx doesn't expose language detection
+        detected_lang: str | None = "en" if text else None
         return raw_segments, text, detected_lang
 
     @staticmethod

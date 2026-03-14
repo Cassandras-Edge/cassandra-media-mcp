@@ -1,5 +1,5 @@
-# Lightweight ONNX-based GPU worker image.
-# No torch, no NeMo, no SpeechBrain. ~3GB vs ~9.5GB.
+# Lightweight sherpa-onnx GPU worker image.
+# Batched ASR via decode_streams() for high GPU utilization.
 
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
@@ -16,23 +16,25 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 
-# Install TensorRT + ONNX runtime + ASR + diarization deps (no torch!)
+# Install sherpa-onnx CUDA wheel + diarization deps (no torch!)
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir \
-      tensorrt-cu12 tensorrt-cu12-libs \
-      "onnx-asr[gpu,hub]" \
+      sherpa-onnx==1.12.29+cuda -f https://k2-fsa.github.io/sherpa/onnx/cuda.html \
+ && pip install --no-cache-dir \
+      numpy \
       soundfile \
       scipy \
       scikit-learn
 
-# Pre-download models into the image (CPU-only at build time, no GPU available)
-ENV HF_HOME=/opt/hf_cache
+# Pre-download ASR + VAD models into the image
+RUN mkdir -p /opt/models \
+ && curl -SL https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2 \
+    | tar xj -C /opt/models \
+ && curl -SL -o /opt/models/silero_vad.onnx \
+    https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
 
-RUN python -c "\
-import onnx_asr; \
-onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', providers=['CPUExecutionProvider']); \
-onnx_asr.load_vad('silero', providers=['CPUExecutionProvider']); \
-print('onnx-asr models cached')"
+# Pre-download diarization models (HuggingFace)
+ENV HF_HOME=/opt/hf_cache
 
 RUN python -c "\
 from huggingface_hub import hf_hub_download; \
@@ -61,7 +63,8 @@ ENV PYTHONUNBUFFERED=1 \
     ROLE=worker \
     TRANSCRIPTION_ENGINE=onnx \
     HF_HOME=/opt/hf_cache \
-    LD_LIBRARY_PATH="/opt/venv/lib/python3.12/site-packages/tensorrt_libs:${LD_LIBRARY_PATH}"
+    SHERPA_MODELS_DIR=/opt/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 \
+    SILERO_VAD_MODEL=/opt/models/silero_vad.onnx
 
 EXPOSE 3001
 
