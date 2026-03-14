@@ -1,7 +1,8 @@
 import { createMcpWorker } from "cassandra-mcp-auth";
 import { registerMcpTools } from "./mcp-tools";
+import { syncWatchLaterForAllKeys } from "./watch-later-cron";
 
-const { default: worker, McpAgentClass } = createMcpWorker<Env>({
+const { default: mcpWorker, McpAgentClass } = createMcpWorker<Env>({
   serviceId: "yt-mcp",
   name: "Cassandra YT MCP",
   version: "1.0.0",
@@ -11,4 +12,9 @@ const { default: worker, McpAgentClass } = createMcpWorker<Env>({
 });
 
 export { McpAgentClass as CassandraYtMCP };
-export default worker;
+export default {
+  fetch: mcpWorker.fetch,
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(syncWatchLaterForAllKeys(env));
+  },
+};
