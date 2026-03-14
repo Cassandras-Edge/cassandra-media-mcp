@@ -1,6 +1,7 @@
 """ONNX-based transcriber using onnx-asr + ONNX diarization.
 
 Replaces NeMo/PyTorch with pure ONNX inference. ~2GB RAM vs ~6GB.
+Long audio is split into physical chunks on disk to bound memory.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ import subprocess
 import unicodedata
 from pathlib import Path
 
-import numpy as np
 import soundfile as sf
 
 from cassandra_yt_mcp.services.onnx_diarization import OnnxDiarization
@@ -29,6 +29,11 @@ SUPPORTED_LANGUAGES: frozenset[str] = frozenset(
 )
 _EUROPEAN_SCRIPTS: frozenset[str] = frozenset({"LATIN", "CYRILLIC", "GREEK"})
 _PARAKEET_MODEL = "nemo-parakeet-tdt-0.6b-v3"
+
+# Chunk long audio into segments of this duration (seconds).
+# Each chunk is written to disk and processed independently.
+_CHUNK_SECONDS = 600  # 10 minutes
+_OVERLAP_SECONDS = 10  # overlap for diarization continuity
 
 
 class OnnxTranscriber:
@@ -69,10 +74,7 @@ class OnnxTranscriber:
 
     @staticmethod
     def _to_wav(audio_path: Path) -> Path:
-        """Convert any audio format to mono 16kHz WAV via ffmpeg.
-
-        soundfile only supports WAV/FLAC/OGG — YouTube downloads are typically m4a/webm.
-        """
+        """Convert any audio format to mono 16kHz WAV via ffmpeg."""
         wav_path = audio_path.with_suffix(".wav")
         if audio_path.suffix.lower() in (".wav",):
             return audio_path
@@ -101,81 +103,180 @@ class OnnxTranscriber:
                 wav_path.unlink(missing_ok=True)
 
     def _transcribe_wav(self, wav_path: Path) -> TranscriptResult:
-        # Ensure mono 16kHz WAV on disk (ffmpeg already does this in _to_wav,
-        # but handle raw .wav uploads that might be stereo/wrong sample rate)
+        # Ensure mono 16kHz
         info = sf.info(str(wav_path))
         if info.samplerate != 16000 or info.channels > 1:
             mono_path = wav_path.with_suffix(".mono.wav")
-            waveform, sr = sf.read(str(wav_path), dtype="float32", always_2d=True)
-            if waveform.shape[1] > 1:
-                waveform = waveform.mean(axis=1)
-            else:
-                waveform = waveform[:, 0]
-            if sr != 16000:
-                from scipy.signal import resample as scipy_resample  # noqa: PLC0415
-
-                num_samples = int(len(waveform) * 16000 / sr)
-                waveform = scipy_resample(waveform, num_samples).astype(np.float32)
-            sf.write(str(mono_path), waveform, 16000)
-            del waveform
-            gc.collect()
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", str(wav_path),
+                    "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+                    str(mono_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
             cleanup_mono = True
         else:
             mono_path = wav_path
             cleanup_mono = False
 
         try:
-            # ASR with VAD chunking + timestamps (onnx-asr reads from disk)
-            segments_iter = self._asr_model.recognize(str(mono_path))  # type: ignore[union-attr]
+            mono_info = sf.info(str(mono_path))
+            duration_secs = mono_info.frames / mono_info.samplerate
 
-            all_text_parts: list[str] = []
-            raw_segments: list[dict[str, object]] = []
-            detected_lang: str | None = None
-
-            if not isinstance(segments_iter, list):
-                segments_iter = list(segments_iter)
-
-            for seg_result in segments_iter:
-                text = seg_result.text.strip() if seg_result.text else ""
-                if not text:
-                    continue
-                all_text_parts.append(text)
-
-                start = getattr(seg_result, "start", 0.0)
-                end = getattr(seg_result, "end", 0.0)
-
-                raw_segments.append({
-                    "text": text,
-                    "start": float(start),
-                    "end": float(end),
-                })
-
-                if detected_lang is None:
-                    lang = getattr(seg_result, "lang", None) or getattr(seg_result, "language", None)
-                    if lang and isinstance(lang, str):
-                        detected_lang = lang.strip().lower()[:2] or None
-
-            del segments_iter
-            text = " ".join(all_text_parts)
-            gc.collect()
-
-            if detected_lang and detected_lang not in SUPPORTED_LANGUAGES:
-                raise UnsupportedLanguageError(detected_lang)
-            if not detected_lang and not _text_uses_european_scripts(text):
-                raise UnsupportedLanguageError("unknown")
-
-            # Diarization — reads from disk, memory-bounded
-            speaker_turns = self._diarization(str(mono_path))  # type: ignore[misc]
-            gc.collect()
-
-            return TranscriptResult(
-                text=text,
-                segments=_align_segments(raw_segments, speaker_turns),
-                language=detected_lang or "en",
-            )
+            if duration_secs <= _CHUNK_SECONDS + _OVERLAP_SECONDS:
+                return self._process_single(mono_path)
+            else:
+                logger.info(
+                    "Audio is %.0fs — splitting into %ds chunks",
+                    duration_secs, _CHUNK_SECONDS,
+                )
+                return self._process_chunked(mono_path, duration_secs)
         finally:
             if cleanup_mono:
                 mono_path.unlink(missing_ok=True)
+
+    def _process_single(self, mono_path: Path) -> TranscriptResult:
+        """Process a short audio file (< ~10 min) in one pass."""
+        # ASR
+        raw_segments, text, detected_lang = self._run_asr(mono_path, offset_secs=0.0)
+        gc.collect()
+
+        self._check_language(detected_lang, text)
+
+        # Diarization
+        speaker_turns = self._diarization(str(mono_path))  # type: ignore[misc]
+        gc.collect()
+
+        return TranscriptResult(
+            text=text,
+            segments=_align_segments(raw_segments, speaker_turns),
+            language=detected_lang or "en",
+        )
+
+    def _process_chunked(self, mono_path: Path, total_duration: float) -> TranscriptResult:
+        """Process long audio in chunks: split to disk, ASR+diarize each, merge."""
+        sr = 16000
+        chunk_samples = _CHUNK_SECONDS * sr
+        overlap_samples = _OVERLAP_SECONDS * sr
+        stride_samples = chunk_samples - overlap_samples
+        total_samples = int(total_duration * sr)
+
+        all_raw_segments: list[dict[str, object]] = []
+        all_speaker_turns: list[tuple[float, float, str]] = []
+        detected_lang: str | None = None
+
+        chunk_idx = 0
+        offset_sample = 0
+
+        while offset_sample < total_samples:
+            end_sample = min(offset_sample + chunk_samples, total_samples)
+            num_frames = end_sample - offset_sample
+            offset_secs = offset_sample / sr
+
+            # Write this chunk to a temp file on disk
+            chunk_path = mono_path.with_suffix(f".chunk{chunk_idx}.wav")
+            try:
+                with sf.SoundFile(str(mono_path)) as f:
+                    f.seek(offset_sample)
+                    chunk_data = f.read(num_frames, dtype="int16")
+                sf.write(str(chunk_path), chunk_data, sr, subtype="PCM_16")
+                del chunk_data
+                gc.collect()
+
+                logger.info(
+                    "Processing chunk %d (%.0fs–%.0fs)",
+                    chunk_idx, offset_secs, end_sample / sr,
+                )
+
+                # ASR on this chunk
+                chunk_segments, _, lang = self._run_asr(
+                    chunk_path, offset_secs=offset_secs,
+                )
+                gc.collect()
+
+                if not detected_lang and lang:
+                    detected_lang = lang
+
+                # Diarization on this chunk
+                chunk_turns = self._diarization(str(chunk_path))  # type: ignore[misc]
+                # Shift diarization timestamps to absolute positions
+                chunk_turns = [
+                    (s + offset_secs, e + offset_secs, spk)
+                    for s, e, spk in chunk_turns
+                ]
+                gc.collect()
+
+                all_raw_segments.extend(chunk_segments)
+                all_speaker_turns.extend(chunk_turns)
+
+            finally:
+                chunk_path.unlink(missing_ok=True)
+
+            chunk_idx += 1
+            offset_sample += stride_samples
+
+        text = " ".join(
+            str(s.get("text", "")).strip()
+            for s in all_raw_segments
+            if str(s.get("text", "")).strip()
+        )
+
+        self._check_language(detected_lang, text)
+
+        # Merge overlapping speaker turns from adjacent chunks
+        all_speaker_turns.sort(key=lambda t: t[0])
+
+        return TranscriptResult(
+            text=text,
+            segments=_align_segments(all_raw_segments, all_speaker_turns),
+            language=detected_lang or "en",
+        )
+
+    def _run_asr(
+        self, audio_path: Path, *, offset_secs: float,
+    ) -> tuple[list[dict[str, object]], str, str | None]:
+        """Run ASR on a single audio file. Returns (segments, text, detected_lang)."""
+        segments_iter = self._asr_model.recognize(str(audio_path))  # type: ignore[union-attr]
+
+        raw_segments: list[dict[str, object]] = []
+        all_text_parts: list[str] = []
+        detected_lang: str | None = None
+
+        if not isinstance(segments_iter, list):
+            segments_iter = list(segments_iter)
+
+        for seg_result in segments_iter:
+            seg_text = seg_result.text.strip() if seg_result.text else ""
+            if not seg_text:
+                continue
+            all_text_parts.append(seg_text)
+
+            start = float(getattr(seg_result, "start", 0.0)) + offset_secs
+            end = float(getattr(seg_result, "end", 0.0)) + offset_secs
+
+            raw_segments.append({
+                "text": seg_text,
+                "start": start,
+                "end": end,
+            })
+
+            if detected_lang is None:
+                lang = getattr(seg_result, "lang", None) or getattr(seg_result, "language", None)
+                if lang and isinstance(lang, str):
+                    detected_lang = lang.strip().lower()[:2] or None
+
+        del segments_iter
+        text = " ".join(all_text_parts)
+        return raw_segments, text, detected_lang
+
+    @staticmethod
+    def _check_language(detected_lang: str | None, text: str) -> None:
+        if detected_lang and detected_lang not in SUPPORTED_LANGUAGES:
+            raise UnsupportedLanguageError(detected_lang)
+        if not detected_lang and not _text_uses_european_scripts(text):
+            raise UnsupportedLanguageError("unknown")
 
 
 def _text_uses_european_scripts(text: str) -> bool:
