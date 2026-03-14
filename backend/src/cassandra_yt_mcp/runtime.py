@@ -25,12 +25,14 @@ from cassandra_yt_mcp.metrics import (
     transcripts_stored,
     word_count,
 )
+from cassandra_yt_mcp.db.watch_later import WatchLaterRepository
 from cassandra_yt_mcp.services.downloader import Downloader
 from cassandra_yt_mcp.services.fallback_transcriber import FallbackTranscriber
 from cassandra_yt_mcp.services.local_transcriber import LocalTranscriber
 from cassandra_yt_mcp.services.remote_transcriber import NoHealthyWorkerError, RemoteTranscriber
 from cassandra_yt_mcp.services.storage import StorageService
 from cassandra_yt_mcp.services.transcriber import AssemblyAITranscriber
+from cassandra_yt_mcp.services.watch_later import WatchLaterService
 from cassandra_yt_mcp.services.youtube_info import YouTubeInfoService
 from cassandra_yt_mcp.utils.url import extract_youtube_video_id, is_playlist_url, normalize_url
 
@@ -425,6 +427,66 @@ class BackgroundWorker:
 
 
 # ---------------------------------------------------------------------------
+# WatchLaterWorker — periodic sync for registered users
+# ---------------------------------------------------------------------------
+
+
+class WatchLaterWorker:
+    """Polls watch_later_users for due syncs and runs them."""
+
+    def __init__(
+        self,
+        *,
+        watch_later_repo: WatchLaterRepository,
+        watch_later_service: WatchLaterService,
+        poll_interval_seconds: int = 60,
+    ) -> None:
+        self.watch_later_repo = watch_later_repo
+        self.watch_later_service = watch_later_service
+        self.poll_interval_seconds = poll_interval_seconds
+        self._stop_event = Event()
+        self._thread = Thread(target=self._run_loop, name="watch-later-worker", daemon=True)
+
+    def start(self) -> None:
+        if not self._thread.is_alive():
+            self._thread.start()
+
+    def stop(self, timeout_seconds: float = 10.0) -> None:
+        self._stop_event.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=timeout_seconds)
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread.is_alive() and not self._stop_event.is_set()
+
+    def _run_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._sync_due_users()
+            except Exception:  # noqa: BLE001
+                logger.exception("WatchLaterWorker error")
+            self._stop_event.wait(self.poll_interval_seconds)
+
+    def _sync_due_users(self) -> None:
+        due_users = self.watch_later_repo.list_due_users()
+        for user in due_users:
+            if self._stop_event.is_set():
+                break
+            user_id = str(user["user_id"])
+            cookies_b64 = str(user["cookies_b64"])
+            try:
+                result = self.watch_later_service.sync(user_id, cookies_b64)
+                logger.info(
+                    "Watch later auto-sync for %s: %d new, %d total",
+                    user_id, result.get("new_count", 0), result.get("total", 0),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Watch later auto-sync failed for %s", user_id)
+                self.watch_later_repo.update_last_sync(user_id, error=str(exc)[:500])
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -485,11 +547,24 @@ class AppRuntime:
         self.jobs = JobsRepository(self.database)
         self.transcripts = TranscriptsRepository(self.database)
         self.storage = StorageService(settings.data_dir)
+        self.watch_later_repo = WatchLaterRepository(self.database)
 
         # Set up yt-dlp cookie file from base64-encoded env var
         cookies_file = self._setup_cookies(settings)
         self.downloader = Downloader(settings.data_dir / "_work", cookies_file=cookies_file)
         self.youtube_info = YouTubeInfoService(cookies_file=cookies_file)
+
+        # Watch Later service (shared by API + background worker)
+        self.watch_later_service = WatchLaterService(
+            watch_later_repo=self.watch_later_repo,
+            transcripts_repo=self.transcripts,
+            work_root=settings.data_dir / "_work",
+            enqueue_fn=self.enqueue_transcription,
+        )
+        self.watch_later_worker = WatchLaterWorker(
+            watch_later_repo=self.watch_later_repo,
+            watch_later_service=self.watch_later_service,
+        )
 
         if settings.role == "coordinator":
             self.transcriber = self._build_transcriber(settings)
@@ -520,8 +595,10 @@ class AppRuntime:
         transcripts_stored.set(self.transcripts.count())
         jobs_queued.set(self.jobs.count_queued())
         self.worker.start()
+        self.watch_later_worker.start()
 
     def close(self) -> None:
+        self.watch_later_worker.stop()
         self.worker.stop()
         self.database.close()
 

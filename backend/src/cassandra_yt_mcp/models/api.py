@@ -9,6 +9,11 @@ class TranscribeRequest(BaseModel):
     url: str = Field(min_length=1)
 
 
+class WatchLaterSyncRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    cookies_b64: str = Field(min_length=1)
+
+
 class HealthResponse(BaseModel):
     ok: bool
     worker_running: bool

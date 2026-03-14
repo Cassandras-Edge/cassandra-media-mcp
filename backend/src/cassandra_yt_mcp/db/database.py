@@ -82,6 +82,24 @@ class Database:
                   description,
                   transcript_text
                 );
+
+                CREATE TABLE IF NOT EXISTS watch_later_users (
+                  user_id TEXT PRIMARY KEY,
+                  cookies_b64 TEXT NOT NULL,
+                  enabled INTEGER NOT NULL DEFAULT 1,
+                  interval_minutes INTEGER NOT NULL DEFAULT 240,
+                  last_sync_at TEXT,
+                  last_error TEXT,
+                  registered_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                CREATE TABLE IF NOT EXISTS watch_later_seen (
+                  user_id TEXT NOT NULL,
+                  video_id TEXT NOT NULL,
+                  title TEXT,
+                  first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  PRIMARY KEY (user_id, video_id)
+                );
                 """
             )
             self._conn.commit()

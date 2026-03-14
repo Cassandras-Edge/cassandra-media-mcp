@@ -1,8 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ResolvedAuth } from "cassandra-mcp-auth";
 import { z } from "zod";
 import { backendGet, backendPost, jsonToolResponse } from "./backend";
 
-export function registerMcpTools(server: McpServer, env: Env): void {
+export function registerMcpTools(server: McpServer, env: Env, auth: ResolvedAuth): void {
   server.registerTool(
     "transcribe",
     {
@@ -160,6 +161,47 @@ export function registerMcpTools(server: McpServer, env: Env): void {
           limit: limit as number,
           sort: sort as string,
           url: String(url),
+        })) as Record<string, unknown>,
+      ),
+  );
+
+  server.registerTool(
+    "watch_later_sync",
+    {
+      description:
+        "Sync your YouTube Watch Later playlist. Finds new videos, queues them for transcription, and tracks which ones have been seen. Requires YouTube cookies to be configured in the portal.",
+      annotations: { readOnlyHint: false, idempotentHint: true },
+      inputSchema: {},
+    },
+    async () => {
+      const cookies = auth.credentials?.youtube_cookies;
+      if (!cookies) {
+        return jsonToolResponse({
+          error: "no_cookies",
+          message:
+            "YouTube cookies not configured. Set them in the portal under yt-mcp service credentials.",
+        });
+      }
+      return jsonToolResponse(
+        (await backendPost(env, "/api/watch-later/sync", {
+          user_id: auth.userId,
+          cookies_b64: cookies,
+        })) as Record<string, unknown>,
+      );
+    },
+  );
+
+  server.registerTool(
+    "watch_later_status",
+    {
+      description: "Check the status of your Watch Later sync — seen videos, last sync time, etc.",
+      annotations: { readOnlyHint: true },
+      inputSchema: {},
+    },
+    async () =>
+      jsonToolResponse(
+        (await backendGet(env, "/api/watch-later/status", {
+          user_id: auth.userId,
         })) as Record<string, unknown>,
       ),
   );

@@ -5,8 +5,8 @@ const { default: worker, McpAgentClass } = createMcpWorker<Env>({
   serviceId: "yt-mcp",
   name: "Cassandra YT MCP",
   version: "1.0.0",
-  registerTools(server, env) {
-    registerMcpTools(server, env);
+  registerTools(server, env, auth) {
+    registerMcpTools(server, env, auth);
   },
 });
 

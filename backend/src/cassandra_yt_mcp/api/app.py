@@ -9,7 +9,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from cassandra_yt_mcp.config import Settings, load_settings
 from cassandra_yt_mcp.metrics import api_request_duration_seconds, api_requests_total
-from cassandra_yt_mcp.models.api import TranscribeRequest
+from cassandra_yt_mcp.models.api import TranscribeRequest, WatchLaterSyncRequest
 from cassandra_yt_mcp.runtime import AppRuntime
 
 _SKIP_METRICS_PATHS = frozenset({"/metrics", "/healthz"})
@@ -180,6 +180,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except RuntimeError as exc:
             return {"error": "comments_failed", "message": str(exc)}
         return {"url": url, "count": len(comments), "sort": sort, "comments": comments}
+
+    @app.post("/api/watch-later/sync", dependencies=[Depends(require_api_token)])
+    def watch_later_sync(
+        payload: WatchLaterSyncRequest,
+        runtime: AppRuntime = Depends(get_runtime),
+    ) -> dict[str, object]:
+        # Register/update user cookies for auto-sync
+        runtime.watch_later_repo.register_user(payload.user_id, payload.cookies_b64)
+        try:
+            return runtime.watch_later_service.sync(payload.user_id, payload.cookies_b64)
+        except RuntimeError as exc:
+            return {"error": "sync_failed", "message": str(exc)}
+
+    @app.get("/api/watch-later/status", dependencies=[Depends(require_api_token)])
+    def watch_later_status(
+        user_id: str,
+        runtime: AppRuntime = Depends(get_runtime),
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> dict[str, object]:
+        user = runtime.watch_later_repo.get_user(user_id)
+        if user is None:
+            return {"registered": False, "user_id": user_id}
+        seen = runtime.watch_later_repo.list_seen(user_id, limit=limit)
+        return {
+            "registered": True,
+            "user_id": user_id,
+            "enabled": bool(user["enabled"]),
+            "interval_minutes": user["interval_minutes"],
+            "last_sync_at": user["last_sync_at"],
+            "last_error": user["last_error"],
+            "seen_count": runtime.watch_later_repo.count_seen(user_id),
+            "recent_seen": seen,
+        }
 
     return app
 
