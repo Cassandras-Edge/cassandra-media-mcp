@@ -242,7 +242,9 @@ class OnnxDiarization:
 
         num_frames = self._sample2frame(window_samples)
         seconds_per_frame = self._duration / num_frames
-        total_frames = int(total_duration / seconds_per_frame) + 100
+        # Over-allocate: each step adds num_frames worth of data, plus padding
+        num_steps = (total_samples // step_samples) + 2
+        total_frames = num_steps * num_frames + num_frames
 
         global_scores = np.zeros((total_frames, 3), dtype=np.float32)
         overlap_frames = self._sample2frame(window_samples - step_samples)
