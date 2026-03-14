@@ -1,5 +1,5 @@
-# sherpa-onnx GPU worker image.
-# Batched ASR via decode_streams() for high GPU utilization.
+# ONNX GPU worker image — onnx-asr with batch inference.
+# No torch, no NeMo, no SpeechBrain. ~3GB vs ~9.5GB.
 
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
@@ -7,7 +7,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3.12 python3.12-venv python3-pip \
-      ffmpeg libsndfile1 curl ca-certificates bzip2 \
+      ffmpeg libsndfile1 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
@@ -16,27 +16,22 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 
-# Install sherpa-onnx CUDA wheel + diarization deps (no torch!)
+# Install onnx-asr with CUDA + diarization deps (no torch!)
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir \
-      sherpa-onnx==1.12.29+cuda12.cudnn9 -f https://k2-fsa.github.io/sherpa/onnx/cuda.html \
- && pip install --no-cache-dir \
-      numpy \
+      "onnx-asr[gpu,hub]" \
       soundfile \
       scipy \
-      scikit-learn \
-      huggingface_hub \
-      onnxruntime
+      scikit-learn
 
-# Pre-download ASR + VAD models into the image
-RUN mkdir -p /opt/models \
- && curl -SL https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2 \
-    | tar xj -C /opt/models \
- && curl -SL -o /opt/models/silero_vad.onnx \
-    https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
-
-# Pre-download diarization models (HuggingFace)
+# Pre-download models into the image (CPU-only at build time, no GPU available)
 ENV HF_HOME=/opt/hf_cache
+
+RUN python -c "\
+import onnx_asr; \
+onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', providers=['CPUExecutionProvider']); \
+onnx_asr.load_vad('silero', providers=['CPUExecutionProvider']); \
+print('onnx-asr models cached')"
 
 RUN python -c "\
 from huggingface_hub import hf_hub_download; \
@@ -70,9 +65,7 @@ ENV PYTHONUNBUFFERED=1 \
     DATA_DIR=/data \
     ROLE=worker \
     TRANSCRIPTION_ENGINE=onnx \
-    HF_HOME=/opt/hf_cache \
-    SHERPA_MODELS_DIR=/opt/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 \
-    SILERO_VAD_MODEL=/opt/models/silero_vad.onnx
+    HF_HOME=/opt/hf_cache
 
 EXPOSE 3001
 
