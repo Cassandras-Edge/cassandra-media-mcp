@@ -2,7 +2,7 @@
 # No Python, no PyTorch, no NeMo. Just Rust + ONNX Runtime + CUDA.
 
 # ── Stage 1: Build with CUDA-enabled ORT ──
-FROM rust:1.87-bookworm AS builder
+FROM rust:1.89-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config libssl-dev cmake \
