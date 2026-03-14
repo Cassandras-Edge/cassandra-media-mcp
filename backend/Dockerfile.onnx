@@ -25,7 +25,8 @@ RUN pip install --no-cache-dir --upgrade pip \
       soundfile \
       scipy \
       scikit-learn \
-      huggingface_hub
+      huggingface_hub \
+      onnxruntime-gpu
 
 # Pre-download ASR + VAD models into the image
 RUN mkdir -p /opt/models \
