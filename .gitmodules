@@ -1,3 +1,0 @@
-[submodule "gpu-worker/parakeet-rs"]
-	path = gpu-worker/parakeet-rs
-	url = https://github.com/altunenes/parakeet-rs.git
