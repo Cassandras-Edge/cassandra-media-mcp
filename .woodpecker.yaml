@@ -44,6 +44,7 @@ steps:
         --destination=172.20.0.161:30500/cassandra-yt-mcp/coordinator:latest
         --destination=172.20.0.161:30500/cassandra-yt-mcp/coordinator:${CI_COMMIT_SHA:0:7}
         --insecure
+        --snapshot-mode=redo
         --cache=true
         --cache-repo=172.20.0.161:30500/cassandra-yt-mcp/coordinator-cache
         --compressed-caching=false
@@ -83,6 +84,7 @@ steps:
         --destination=172.20.0.161:30500/cassandra-yt-mcp/backend-onnx:${CI_COMMIT_SHA:0:7}
         --insecure
         --cache=true
+        --snapshot-mode=redo
         --cache-repo=172.20.0.161:30500/cassandra-yt-mcp/backend-onnx-cache
         --compressed-caching=false
         --insecure-registry=172.20.0.161:30500
