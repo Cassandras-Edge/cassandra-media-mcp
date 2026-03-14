@@ -30,7 +30,7 @@ steps:
       - event: push
         branch: main
         path:
-          include: ['backend/**']
+          include: ['backend/Dockerfile.coordinator', 'backend/pyproject.toml', 'backend/src/**']
     commands:
       - >
         /kaniko/executor
