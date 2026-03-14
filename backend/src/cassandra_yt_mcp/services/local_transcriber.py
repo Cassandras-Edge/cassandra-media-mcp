@@ -43,7 +43,7 @@ _PARAKEET_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
 _PYANNOTE_PIPELINE = "pyannote/speaker-diarization-3.1"
 _CHUNK_SECONDS = 600  # 10-min chunks for ASR to avoid VRAM OOM
 _OVERLAP_SECONDS = 30  # 30s overlap for reliable LCS merge at boundaries
-_BATCH_SIZE = 16  # GPU batch inference — higher = more throughput, more VRAM
+_BATCH_SIZE = 32  # GPU batch inference — RTX 5080 16GB can handle ~32 safely
 
 
 class LocalTranscriber:
