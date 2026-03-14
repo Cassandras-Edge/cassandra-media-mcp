@@ -2,7 +2,7 @@ use std::path::Path;
 
 use eyre::{Context, Result};
 use parakeet_rs::sortformer::{DiarizationConfig, Sortformer, SpeakerSegment};
-use parakeet_rs::{ParakeetTDT, TimestampMode, Transcriber};
+use parakeet_rs::{ExecutionConfig, ExecutionProvider, ParakeetTDT, TimestampMode, Transcriber};
 use tracing::info;
 
 /// Max seconds per TDT chunk — TDT fails on sequences longer than ~8-10 min.
@@ -30,12 +30,15 @@ pub struct TranscribeEngine {
 
 impl TranscribeEngine {
     pub fn new(tdt_dir: &str, sortformer_path: &str) -> Result<Self> {
-        let tdt = ParakeetTDT::from_pretrained(tdt_dir, None)
+        let cuda_config = ExecutionConfig::new()
+            .with_execution_provider(ExecutionProvider::Cuda);
+
+        let tdt = ParakeetTDT::from_pretrained(tdt_dir, Some(cuda_config.clone()))
             .wrap_err("failed to load TDT model")?;
 
         let sortformer = Sortformer::with_config(
             sortformer_path,
-            None,
+            Some(cuda_config),
             DiarizationConfig::callhome(),
         )
         .wrap_err("failed to load Sortformer model")?;
