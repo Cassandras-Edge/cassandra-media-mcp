@@ -53,7 +53,6 @@ steps:
         branch: main
     commands:
       - kubectl rollout restart deployment cassandra-yt-mcp -n cassandra-yt-mcp
-      - kubectl rollout restart deployment cassandra-yt-mcp-downloader -n cassandra-yt-mcp || true
 
   # ── Cron: rebuild coordinator with latest yt-dlp stable (no cache) ──
 
