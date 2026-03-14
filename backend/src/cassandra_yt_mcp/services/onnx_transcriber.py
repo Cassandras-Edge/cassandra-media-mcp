@@ -66,8 +66,11 @@ class OnnxTranscriber:
                 "CPUExecutionProvider",
             ]
 
+        # VAD uses a simple model that TensorRT can't handle (missing shape info).
+        # Use CUDA for VAD, TensorRT only for the heavy ASR model.
+        cuda_providers: list[str] = ["CUDAExecutionProvider", "CPUExecutionProvider"]
         logger.info("Loading onnx-asr model: %s (TensorRT FP16 preferred)", _PARAKEET_MODEL)
-        vad = onnx_asr.load_vad("silero", providers=providers)
+        vad = onnx_asr.load_vad("silero", providers=cuda_providers)
         model = onnx_asr.load_model(
             _PARAKEET_MODEL,
             providers=providers,
