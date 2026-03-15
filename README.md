@@ -4,29 +4,30 @@
 
 It is intentionally split into three ownership layers:
 
-- `backend/` - private HTTP API for jobs, transcript storage, and yt-dlp/transcription runtime
-- `worker/` - public Cloudflare Worker MCP + OAuth edge using the same WorkOS pattern as `fast-mcp-test`
-- `infra/` - service-owned Terraform modules that `cassandra-infra` composes into environments
+- `backend/` - private HTTP API, coordinator, GPU worker, MCP sidecar (FastMCP), yt-dlp/transcription runtime
+- `worker/` - public Cloudflare Worker MCP + OAuth edge using the WorkOS pattern
+- `infra/` - service-owned Terraform modules that `cassandra-infra` composes
 
 ## Deployment Topology
 
+Two MCP access paths:
+
 ```text
-MCP client
-  -> yt-mcp.<domain> (Cloudflare Worker)
-  -> WorkOS OAuth / M2M token resolution
-  -> yt-mcp-api.<domain> (Cloudflare Tunnel + Access)
-  -> cassandra-yt-mcp backend in Kubernetes
-  -> SQLite + PVC transcript store
+# Path 1: CF Worker (existing, WorkOS OAuth)
+MCP client → yt-mcp.<domain> (CF Worker) → WorkOS OAuth → CF Tunnel → backend
+
+# Path 2: FastMCP sidecar (new, API key auth)
+MCP client → yt-mcp-mcp.<domain> → CF Tunnel → MCP sidecar (port 3003) → direct DB
 ```
 
 ## Repo Layout
 
 ```text
 cassandra-yt-mcp/
-├── backend/        # Private backend API, worker loop, tests, Docker image
+├── backend/        # Backend: coordinator + GPU worker + MCP sidecar + tests
 ├── worker/         # Public MCP/OAuth Cloudflare Worker
 ├── infra/          # Service-owned Terraform modules
-└── .github/        # CI/CD for the standalone service repo
+└── .woodpecker.yaml # CI/CD pipeline (Woodpecker CI)
 ```
 
 ## Responsibilities
@@ -37,9 +38,10 @@ cassandra-yt-mcp/
 
 ## Image Publishing
 
-The backend image is built by ARC runners and pushed to the local registry:
+Images are built by Woodpecker CI via BuildKit and pushed to the local registry:
 
-- `172.20.0.161:30500/cassandra-yt-mcp/backend:latest`
+- `172.20.0.161:30500/cassandra-yt-mcp/coordinator:latest`
+- `172.20.0.161:30500/cassandra-yt-mcp/gpu-worker:latest`
 
 ArgoCD syncs the Helm chart using `:latest` with `pullPolicy: Always`.
 
@@ -57,11 +59,11 @@ kubectl create secret generic cassandra-yt-mcp-backend \
   --from-literal=ASSEMBLYAI_API_KEY=<key>       # optional fallback transcriber \
   --from-literal=HUGGINGFACE_TOKEN=<token>       # optional model access
 
-# Cloudflare tunnel connector token
-kubectl create secret generic cloudflare-tunnel \
+# MCP sidecar auth (for FastMCP path)
+kubectl create secret generic cassandra-yt-mcp-mcp \
   --namespace cassandra-yt-mcp \
-  --from-literal=token=<tunnel-token>
-# Get token from: cd cassandra-infra/environments/production/yt-mcp && tofu output -raw tunnel_token
+  --from-literal=ACL_URL=https://acl.<domain> \
+  --from-literal=ACL_SECRET=<acl-secret>
 ```
 
 ### Cloudflare Worker (`wrangler secret put`)

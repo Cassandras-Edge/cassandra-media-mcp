@@ -17,7 +17,7 @@
     "@cloudflare/workers-oauth-provider": "^0.3.0",
     "@modelcontextprotocol/sdk": "^1.19.0",
     "agents": "^0.7.5",
-    "cassandra-mcp-auth": "github:DigiBugCat/cassandra-mcp-auth",
+    "cassandra-mcp-auth": "github:DigiBugCat/cassandra-auth",
     "cassandra-observability": "github:DigiBugCat/cassandra-observability",
     "zod": "^4.3.6"
   },

@@ -25,6 +25,11 @@ class Settings:
     download_concurrency: int  # Number of concurrent downloads (downloader mode)
     downloader_port: int  # Port for downloader healthz (downloader mode)
     transcription_engine: str  # "onnx" | "nemo"
+    # MCP server settings (role=mcp)
+    mcp_port: int
+    acl_url: str  # ACL service URL for key validation
+    acl_secret: str  # Shared secret for ACL service auth
+    acl_yaml_path: str  # Path to bundled acl.yaml for local enforcement
 
 
 def _as_int(name: str, default: int) -> int:
@@ -42,8 +47,8 @@ def load_settings() -> Settings:
     ).resolve()
 
     role = os.getenv("ROLE", "standalone").lower()
-    if role not in ("standalone", "coordinator", "worker", "downloader"):
-        raise ValueError(f"ROLE must be standalone|coordinator|worker|downloader, got '{role}'")
+    if role not in ("standalone", "coordinator", "worker", "downloader", "mcp"):
+        raise ValueError(f"ROLE must be standalone|coordinator|worker|downloader|mcp, got '{role}'")
 
     gpu_workers_raw = os.getenv("GPU_WORKERS", "").strip()
     gpu_workers = [u.strip() for u in gpu_workers_raw.split(",") if u.strip()] if gpu_workers_raw else []
@@ -66,4 +71,8 @@ def load_settings() -> Settings:
         download_concurrency=_as_int("DOWNLOAD_CONCURRENCY", 2),
         downloader_port=_as_int("DOWNLOADER_PORT", 3002),
         transcription_engine=os.getenv("TRANSCRIPTION_ENGINE", "onnx").lower(),
+        mcp_port=_as_int("MCP_PORT", 3003),
+        acl_url=os.getenv("ACL_URL", "").strip(),
+        acl_secret=os.getenv("ACL_SECRET", "").strip(),
+        acl_yaml_path=os.getenv("ACL_YAML_PATH", "/app/acl.yaml"),
     )

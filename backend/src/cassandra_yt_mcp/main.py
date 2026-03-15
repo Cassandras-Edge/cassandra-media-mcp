@@ -29,10 +29,24 @@ def downloader_app():
     return create_downloader_app(load_settings())
 
 
+def mcp_app():
+    from cassandra_yt_mcp.mcp_server import create_mcp_server  # noqa: PLC0415
+
+    return create_mcp_server(load_settings())
+
+
 def cli() -> None:
     settings = load_settings()
 
-    if settings.role == "worker":
+    if settings.role == "mcp":
+        logger.info("Starting in MCP mode on port %d", settings.mcp_port)
+        mcp_server = mcp_app()
+        mcp_server.run(
+            transport="streamable-http",
+            host=settings.host,
+            port=settings.mcp_port,
+        )
+    elif settings.role == "worker":
         logger.info("Starting in WORKER mode on port %d", settings.worker_port)
         uvicorn.run(
             "cassandra_yt_mcp.main:worker_app",

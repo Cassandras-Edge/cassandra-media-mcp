@@ -1,0 +1,431 @@
+"""FastMCP server for Cassandra YT MCP — exposes the same 10 tools as the CF Worker."""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastmcp import FastMCP
+from fastmcp.dependencies import CurrentAccessToken
+from fastmcp.server.auth import AccessToken
+from fastmcp.server.context import Context
+
+from cassandra_yt_mcp.acl import Enforcer, load_enforcer
+from cassandra_yt_mcp.auth import McpKeyAuthProvider
+from cassandra_yt_mcp.config import Settings
+from cassandra_yt_mcp.runtime import AppRuntime
+
+logger = logging.getLogger(__name__)
+
+SERVICE_ID = "yt-mcp"
+
+# Tools that need ACL enforcement (all of them)
+ALL_TOOL_NAMES = [
+    "transcribe",
+    "job_status",
+    "search",
+    "list_transcripts",
+    "read_transcript",
+    "yt_search",
+    "list_channel_videos",
+    "get_metadata",
+    "get_comments",
+    "watch_later_sync",
+    "watch_later_status",
+]
+
+
+def _get_email(token: AccessToken) -> str:
+    return token.claims.get("email", "")
+
+
+def _get_credentials(token: AccessToken) -> dict[str, str]:
+    return token.claims.get("credentials", {})
+
+
+def _get_youtube_cookies(token: AccessToken) -> str | None:
+    creds = _get_credentials(token)
+    return creds.get("youtube_cookies") or None
+
+
+def _is_youtube_url(url: str) -> bool:
+    lower = url.lower()
+    return any(h in lower for h in ("youtube.com", "youtu.be"))
+
+
+def _check_acl(enforcer: Enforcer, email: str, tool_name: str) -> None:
+    """Raise ValueError if the user is denied access to a tool."""
+    result = enforcer.enforce(email, SERVICE_ID, tool_name)
+    if not result.allowed:
+        raise ValueError(f"Access denied: {result.reason}")
+
+
+def create_mcp_server(settings: Settings) -> FastMCP:
+    """Create and configure the FastMCP server with all tools."""
+
+    auth_provider = McpKeyAuthProvider(
+        acl_url=settings.acl_url,
+        acl_secret=settings.acl_secret,
+        service_id=SERVICE_ID,
+    )
+
+    # Load ACL enforcer from bundled acl.yaml
+    acl_path = Path(settings.acl_yaml_path)
+    enforcer = load_enforcer(acl_path) if acl_path.exists() else None
+
+    @asynccontextmanager
+    async def lifespan(mcp: FastMCP):
+        runtime = AppRuntime(settings)
+        runtime.start()
+        try:
+            yield {"runtime": runtime, "enforcer": enforcer}
+        finally:
+            runtime.close()
+            auth_provider.close()
+
+    mcp = FastMCP(
+        name="Cassandra YT MCP",
+        auth=auth_provider,
+        lifespan=lifespan,
+    )
+
+    # ── Health check ──
+
+    @mcp.custom_route("/healthz", methods=["GET"])
+    async def healthz(request):  # noqa: ANN001, ARG001
+        from starlette.responses import JSONResponse  # noqa: PLC0415
+
+        return JSONResponse({"ok": True, "service": "yt-mcp-fastmcp"})
+
+    # ── Tool: transcribe ──
+
+    @mcp.tool(
+        description=(
+            "Queue a video for transcription. Supports any yt-dlp-compatible URL "
+            "(YouTube, Twitch VODs/clips, Twitter/X, and 1000+ other sites). "
+            "Also supports YouTube playlist URLs."
+        ),
+    )
+    def transcribe(
+        url: str,
+        ctx: Context,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "transcribe")
+
+        cookies_b64 = None
+        if _is_youtube_url(url):
+            cookies_b64 = _get_youtube_cookies(token)
+
+        return runtime.enqueue_transcription(url, cookies_b64=cookies_b64)
+
+    # ── Tool: job_status ──
+
+    @mcp.tool(
+        description=(
+            "Get the status of a transcription job. Returns immediately with current status. "
+            "If in progress, includes a retry_after hint (seconds) for when to poll again."
+        ),
+    )
+    def job_status(
+        job_id: str,
+        ctx: Context,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "job_status")
+
+        return runtime.get_job_status(job_id)
+
+    # ── Tool: search ──
+
+    @mcp.tool(description="Search transcripts by content.")
+    def search(
+        query: str,
+        ctx: Context,
+        limit: int = 10,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "search")
+
+        limit = max(1, min(limit, 50))
+        return {"query": query, "results": runtime.transcripts.search(query=query, limit=limit)}
+
+    # ── Tool: list_transcripts ──
+
+    @mcp.tool(description="List available transcripts.")
+    def list_transcripts(
+        ctx: Context,
+        platform: str | None = None,
+        channel: str | None = None,
+        limit: int = 20,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "list_transcripts")
+
+        limit = max(1, min(limit, 100))
+        items = runtime.transcripts.list_transcripts(platform=platform, channel=channel, limit=limit)
+        return {"count": len(items), "items": items}
+
+    # ── Tool: read_transcript ──
+
+    @mcp.tool(description="Read a transcript by video ID.")
+    def read_transcript(
+        video_id: str,
+        ctx: Context,
+        format: str = "markdown",
+        offset: int = 0,
+        limit: int | None = None,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "read_transcript")
+
+        transcript = runtime.transcripts.get_by_video_id(video_id)
+        if transcript is None:
+            return {
+                "error": "not_found",
+                "message": f"No transcript found for video_id '{video_id}'. Use the transcribe tool with the full URL instead.",
+            }
+
+        import json  # noqa: PLC0415
+
+        base = Path(str(transcript["path"]))
+        if format in ("markdown", "text"):
+            ext = "md" if format == "markdown" else "txt"
+            full = (base / f"transcript.{ext}").read_text(encoding="utf-8")
+            lines = full.splitlines(keepends=True)
+            page = lines[offset:] if limit is None else lines[offset : offset + limit]
+            return {
+                "video_id": video_id,
+                "format": format,
+                "content": "".join(page),
+                "total_lines": len(lines),
+                "offset": offset,
+                "lines_returned": len(page),
+            }
+
+        payload = (base / "transcript.json").read_text(encoding="utf-8")
+        document = json.loads(payload)
+        segments = document.get("segments", document.get("utterances", []))
+        page = segments[offset:] if limit is None else segments[offset : offset + limit]
+        return {
+            "video_id": video_id,
+            "format": "json",
+            "content": page,
+            "total_segments": len(segments),
+            "offset": offset,
+            "segments_returned": len(page),
+        }
+
+    # ── Tool: yt_search ──
+
+    @mcp.tool(description="Search YouTube for videos.")
+    def yt_search(
+        query: str,
+        ctx: Context,
+        limit: int = 10,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "yt_search")
+
+        limit = max(1, min(limit, 25))
+        cookies_file = _write_cookies_to_temp(token)
+        try:
+            results = runtime.youtube_info.search(query=query, limit=limit, cookies_file=cookies_file)
+        except RuntimeError as exc:
+            return {"error": "search_failed", "message": str(exc)}
+        finally:
+            if cookies_file and cookies_file.exists():
+                cookies_file.unlink()
+        return {"query": query, "count": len(results), "results": results}
+
+    # ── Tool: list_channel_videos ──
+
+    @mcp.tool(
+        description="List videos from a YouTube channel. Use tab parameter to browse shorts, videos, or streams.",
+    )
+    def list_channel_videos(
+        url: str,
+        ctx: Context,
+        tab: str = "videos",
+        limit: int = 20,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "list_channel_videos")
+
+        limit = max(1, min(limit, 50))
+        if tab not in ("shorts", "videos", "streams"):
+            tab = "videos"
+        cookies_file = _write_cookies_to_temp(token)
+        try:
+            results = runtime.youtube_info.list_channel_videos(
+                channel_url=url, limit=limit, tab=tab, cookies_file=cookies_file,
+            )
+        except RuntimeError as exc:
+            return {"error": "channel_list_failed", "message": str(exc)}
+        finally:
+            if cookies_file and cookies_file.exists():
+                cookies_file.unlink()
+        return {"url": url, "tab": tab, "count": len(results), "results": results}
+
+    # ── Tool: get_metadata ──
+
+    @mcp.tool(description="Get full metadata for a video (works with any yt-dlp-supported URL).")
+    def get_metadata(
+        url: str,
+        ctx: Context,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "get_metadata")
+
+        cookies_file = _write_cookies_to_temp(token)
+        try:
+            metadata = runtime.youtube_info.get_metadata(url=url, cookies_file=cookies_file)
+        except RuntimeError as exc:
+            return {"error": "metadata_failed", "message": str(exc)}
+        finally:
+            if cookies_file and cookies_file.exists():
+                cookies_file.unlink()
+        return {"url": url, "metadata": metadata}
+
+    # ── Tool: get_comments ──
+
+    @mcp.tool(
+        description="Get comments for a video. Comment sorting/limits are optimized for YouTube; other platforms return all available comments.",
+    )
+    def get_comments(
+        url: str,
+        ctx: Context,
+        limit: int = 20,
+        sort: str = "top",
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "get_comments")
+
+        limit = max(1, min(limit, 100))
+        if sort not in ("top", "new"):
+            sort = "top"
+        cookies_file = _write_cookies_to_temp(token)
+        try:
+            comments = runtime.youtube_info.get_comments(
+                url=url, limit=limit, sort=sort, cookies_file=cookies_file,
+            )
+        except RuntimeError as exc:
+            return {"error": "comments_failed", "message": str(exc)}
+        finally:
+            if cookies_file and cookies_file.exists():
+                cookies_file.unlink()
+        return {"url": url, "count": len(comments), "sort": sort, "comments": comments}
+
+    # ── Tool: watch_later_sync ──
+
+    @mcp.tool(
+        description=(
+            "Sync your YouTube Watch Later playlist. Finds new videos, queues them for "
+            "transcription, and tracks which ones have been seen. Requires YouTube cookies "
+            "to be configured in the portal."
+        ),
+    )
+    def watch_later_sync(
+        ctx: Context,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "watch_later_sync")
+
+        cookies = _get_youtube_cookies(token)
+        if not cookies:
+            return {
+                "error": "no_cookies",
+                "message": "YouTube cookies not configured. Set them in the portal under yt-mcp service credentials.",
+            }
+
+        user_id = _get_email(token)
+        runtime.watch_later_repo.register_user(user_id, cookies)
+        try:
+            return runtime.watch_later_service.sync(user_id, cookies)
+        except RuntimeError as exc:
+            return {"error": "sync_failed", "message": str(exc)}
+
+    # ── Tool: watch_later_status ──
+
+    @mcp.tool(description="Check the status of your Watch Later sync — seen videos, last sync time, etc.")
+    def watch_later_status(
+        ctx: Context,
+        token: AccessToken = CurrentAccessToken(),
+    ) -> dict:
+        runtime: AppRuntime = ctx.lifespan_context["runtime"]
+        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
+        if acl:
+            _check_acl(acl, _get_email(token), "watch_later_status")
+
+        user_id = _get_email(token)
+        user = runtime.watch_later_repo.get_user(user_id)
+        if user is None:
+            return {"registered": False, "user_id": user_id}
+        seen = runtime.watch_later_repo.list_seen(user_id, limit=20)
+        return {
+            "registered": True,
+            "user_id": user_id,
+            "enabled": bool(user["enabled"]),
+            "interval_minutes": user["interval_minutes"],
+            "last_sync_at": user["last_sync_at"],
+            "last_error": user["last_error"],
+            "seen_count": runtime.watch_later_repo.count_seen(user_id),
+            "recent_seen": seen,
+        }
+
+    return mcp
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _write_cookies_to_temp(token: AccessToken) -> Path | None:
+    """Decode YouTube cookies from token credentials to a temp file."""
+    cookies_b64 = _get_youtube_cookies(token)
+    if not cookies_b64:
+        return None
+
+    import base64  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    try:
+        tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
+        tmp.write(base64.b64decode(cookies_b64))
+        tmp.close()
+        return Path(tmp.name)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to decode cookies from token credentials")
+        return None

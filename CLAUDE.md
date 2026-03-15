@@ -12,12 +12,15 @@ cassandra-yt-mcp/
 │   ├── src/
 │   ├── wrangler.jsonc.example
 │   └── package.json
-├── backend/               # Python GPU backend — FastAPI
+├── backend/               # Python GPU backend — FastAPI + FastMCP
 │   ├── src/cassandra_yt_mcp/
-│   │   ├── main.py        # FastAPI app
+│   │   ├── main.py        # FastAPI app (role-based: coordinator, downloader, mcp)
 │   │   ├── config.py      # Settings
 │   │   ├── runtime.py     # Model loading
 │   │   ├── metrics.py     # Prometheus metrics
+│   │   ├── mcp_server.py  # FastMCP server — exposes tools over SSE (port 3003)
+│   │   ├── auth.py        # McpKeyAuthProvider for mcp_ API key validation
+│   │   ├── acl.py         # ACL enforcer — wraps tools with per-user access control
 │   │   ├── api/           # Route handlers
 │   │   ├── db/            # Database layer
 │   │   ├── models/        # Data models
@@ -33,7 +36,9 @@ cassandra-yt-mcp/
 
 `wrangler.jsonc` is gitignored — only `.example` is tracked. Real KV IDs stay local.
 
-## Auth Stack (3 layers)
+## Auth Stack
+
+### CF Worker path (existing)
 
 ```
 Client → CF Worker (WorkOS OAuth OR mcp_ API key)
@@ -44,6 +49,17 @@ Client → CF Worker (WorkOS OAuth OR mcp_ API key)
 1. **MCP API key** (`Bearer mcp_...`): KV lookup in shared `MCP_KEYS`, must have `service === "yt-mcp"`
 2. **WorkOS JWT** (fallback): Standard OAuth for browser clients
 3. **Backend API token**: Worker → backend, protected by CF Access service token
+
+### FastMCP sidecar path (new)
+
+```
+Client → CF Tunnel → MCP sidecar (port 3003)
+       → McpKeyAuthProvider validates mcp_ key via ACL /keys/validate
+       → Enforcer checks per-tool ACL from baked-in acl.yaml
+       → Direct DB access (shared volume with coordinator)
+```
+
+The MCP sidecar runs as a container in the same pod as the coordinator, sharing the data volume. No CF Access or backend API token needed — auth is handled by `cassandra-mcp-auth` Python package.
 
 ## Deploy
 
@@ -84,13 +100,22 @@ tofu apply
 
 ## Backend
 
-- **Image**: `172.20.0.161:30500/cassandra-yt-mcp/backend:latest` (local registry)
-- **GPU**: Runs on `role=gpu-node` with `dedicated=gpu-node:NoSchedule` toleration
-- **Models**: Parakeet TDT 0.6b (ASR) + pyannote 3.1 (diarization) — loaded at startup
+- **Image**: `172.20.0.161:30500/cassandra-yt-mcp/coordinator:latest` (local registry)
+- **GPU**: GPU worker runs on `role=gpu-node` with `dedicated=gpu-node:NoSchedule` toleration
+- **Models**: Parakeet TDT 0.6b (ASR) + pyannote 3.1 (diarization) — loaded at startup on GPU worker
 - **Startup**: Model loading takes minutes — needs long `startupProbe` (3 min window)
 - **Fallback**: AssemblyAI when GPU is unavailable or for unsupported formats
 - **Helm chart**: `cassandra-k8s/apps/cassandra-yt-mcp/`
 - **Exposes `/metrics`** for VMAgent scraping (does NOT use push path)
+
+### MCP Sidecar (FastMCP)
+
+- **Port**: 3003 (SSE transport)
+- **Role**: `mcp` (set via `ROLE=mcp` env var in `main.py`)
+- **Auth**: `McpKeyAuthProvider` validates `mcp_` API keys via ACL service `/keys/validate`
+- **ACL**: `Enforcer` loads baked-in `acl.yaml` (injected at Docker build time via `ACL_YAML_CONTENT` build arg)
+- **Secret**: `cassandra-yt-mcp-mcp` k8s secret (ACL_URL, ACL_SECRET)
+- **Tunnel**: `yt-mcp-mcp.cassandrasedge.com` → port 3003 (for testing; will cut over to `yt-mcp.cassandrasedge.com`)
 
 ## Observability
 
