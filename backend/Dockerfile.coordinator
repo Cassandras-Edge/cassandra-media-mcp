@@ -5,7 +5,7 @@ FROM python:3.12-slim AS coordinator
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg curl ca-certificates unzip \
+      ffmpeg curl ca-certificates unzip git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install deno directly from GitHub releases
