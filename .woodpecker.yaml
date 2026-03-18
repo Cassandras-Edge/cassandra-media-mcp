@@ -53,6 +53,7 @@ steps:
         --opt filename=Dockerfile.coordinator
         --opt build-arg:YTDLP_CHANNEL=stable
         --opt "build-arg:AUTH_YAML_CONTENT=$AUTH_YAML_CONTENT"
+        --opt no-cache=
         --output type=image,name=172.20.0.161:30500/cassandra-yt-mcp/coordinator:latest,push=true,registry.insecure=true
 
   - name: restart-coordinator
