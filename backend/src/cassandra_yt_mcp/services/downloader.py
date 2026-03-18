@@ -25,6 +25,7 @@ class Downloader:
             ["-f", "worstaudio/worstaudio*,worst", "-x"],
             ["-f", "worst", "-x"],
             ["-x"],  # no format selector — let yt-dlp pick whatever's available
+            [],  # last resort — download any video+audio, ffmpeg will extract audio later
         ]
 
         last_error = ""
