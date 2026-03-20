@@ -15,6 +15,7 @@ class Settings:
     data_dir: Path
     database_path: Path
     assemblyai_api_key: str | None
+    deepgram_api_key: str | None
     huggingface_token: str | None
     max_workers: int
     backend_api_token: str | None
@@ -60,6 +61,7 @@ def load_settings() -> Settings:
         data_dir=data_dir,
         database_path=database_path,
         assemblyai_api_key=os.getenv("ASSEMBLYAI_API_KEY", "").strip() or None,
+        deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", "").strip() or None,
         huggingface_token=os.getenv("HUGGINGFACE_TOKEN", "").strip() or None,
         max_workers=_as_int("MAX_WORKERS", 3),
         backend_api_token=os.getenv("BACKEND_API_TOKEN", "").strip() or None,

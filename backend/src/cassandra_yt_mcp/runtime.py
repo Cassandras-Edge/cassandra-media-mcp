@@ -27,6 +27,7 @@ from cassandra_yt_mcp.metrics import (
 )
 from cassandra_yt_mcp.db.watch_later import WatchLaterRepository
 from cassandra_yt_mcp.services.downloader import Downloader
+from cassandra_yt_mcp.services.deepgram_transcriber import DeepgramTranscriber
 from cassandra_yt_mcp.services.fallback_transcriber import FallbackTranscriber
 from cassandra_yt_mcp.services.local_transcriber import LocalTranscriber
 from cassandra_yt_mcp.services.remote_transcriber import NoHealthyWorkerError, RemoteTranscriber
@@ -629,17 +630,18 @@ class AppRuntime:
             logger.info("Coordinator mode — dispatching to GPU workers: %s", settings.gpu_workers)
             return RemoteTranscriber(settings.gpu_workers)
 
-        # standalone mode: local GPU with optional AssemblyAI fallback
+        # standalone mode: local GPU with optional cloud fallback
         local = (
             LocalTranscriber(huggingface_token=settings.huggingface_token)
             if settings.enable_local_transcription
             else None
         )
-        fallback = (
-            AssemblyAITranscriber(api_key=settings.assemblyai_api_key)
-            if settings.assemblyai_api_key
-            else None
-        )
+        # Prefer Deepgram over AssemblyAI as cloud fallback
+        fallback: object | None = None
+        if settings.deepgram_api_key:
+            fallback = DeepgramTranscriber(api_key=settings.deepgram_api_key)
+        elif settings.assemblyai_api_key:
+            fallback = AssemblyAITranscriber(api_key=settings.assemblyai_api_key)
         return FallbackTranscriber(
             local=local,
             fallback=fallback,

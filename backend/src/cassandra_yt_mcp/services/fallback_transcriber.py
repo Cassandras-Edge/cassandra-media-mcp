@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 from cassandra_yt_mcp.metrics import fallback_total
-from cassandra_yt_mcp.services.transcriber import AssemblyAITranscriber, UnsupportedLanguageError
+from cassandra_yt_mcp.services.transcriber import UnsupportedLanguageError
 from cassandra_yt_mcp.types import TranscriptResult
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class FallbackTranscriber:
         self,
         *,
         local: object | None,
-        fallback: AssemblyAITranscriber | None = None,
+        fallback: object | None = None,
         enable_local: bool = True,
     ) -> None:
         self.local = local if enable_local else None
