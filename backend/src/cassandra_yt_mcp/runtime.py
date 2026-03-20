@@ -633,21 +633,23 @@ class AppRuntime:
 
     @staticmethod
     def _build_transcriber(settings: Settings) -> object:
+        # Prefer Deepgram if configured (fast, no GPU needed)
+        if settings.deepgram_api_key:
+            logger.info("Using Deepgram transcriber")
+            return DeepgramTranscriber(api_key=settings.deepgram_api_key)
+
         if settings.role == "coordinator":
             logger.info("Coordinator mode — dispatching to GPU workers: %s", settings.gpu_workers)
             return RemoteTranscriber(settings.gpu_workers)
 
-        # standalone mode: local GPU with optional cloud fallback
+        # standalone mode: local GPU with optional AssemblyAI fallback
         local = (
             LocalTranscriber(huggingface_token=settings.huggingface_token)
             if settings.enable_local_transcription
             else None
         )
-        # Prefer Deepgram over AssemblyAI as cloud fallback
         fallback: object | None = None
-        if settings.deepgram_api_key:
-            fallback = DeepgramTranscriber(api_key=settings.deepgram_api_key)
-        elif settings.assemblyai_api_key:
+        if settings.assemblyai_api_key:
             fallback = AssemblyAITranscriber(api_key=settings.assemblyai_api_key)
         return FallbackTranscriber(
             local=local,
