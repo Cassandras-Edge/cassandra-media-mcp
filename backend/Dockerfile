@@ -44,15 +44,13 @@ RUN mkdir -p /data && chown -R app:app /app /data
 USER app
 
 ENV PYTHONUNBUFFERED=1 \
-    PORT=3000 \
-    MCP_PORT=3003 \
+    PORT=3003 \
     HOST=0.0.0.0 \
     DATA_DIR=/data \
     DATABASE_PATH=/data/cassandra_yt_mcp.sqlite3 \
-    POLL_INTERVAL_SECONDS=5 \
-    ROLE=standalone
+    POLL_INTERVAL_SECONDS=5
 
-EXPOSE 3000 3003
+EXPOSE 3003
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 || exit 1

@@ -96,7 +96,16 @@ def create_mcp_server(settings: Settings) -> FastMCP:
     async def healthz(request):  # noqa: ANN001, ARG001
         from starlette.responses import JSONResponse  # noqa: PLC0415
 
-        return JSONResponse({"ok": True, "service": "yt-mcp-fastmcp"})
+        return JSONResponse({"ok": True, "service": "yt-mcp"})
+
+    # ── Prometheus metrics ──
+
+    @mcp.custom_route("/metrics", methods=["GET"])
+    async def prometheus_metrics(request):  # noqa: ANN001, ARG001
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest  # noqa: PLC0415
+        from starlette.responses import Response  # noqa: PLC0415
+
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     # ── Tool: transcribe ──
 

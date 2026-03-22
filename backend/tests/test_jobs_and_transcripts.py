@@ -10,15 +10,15 @@ from cassandra_yt_mcp.runtime import AppRuntime
 def make_settings(tmp_path: Path) -> Settings:
     return Settings(
         host="127.0.0.1",
-        port=3000,
+        port=3003,
         poll_interval_seconds=5,
         data_dir=tmp_path,
         database_path=tmp_path / "test.sqlite3",
         fluidaudio_url="http://localhost:8420",
         max_workers=1,
-        backend_api_token="secret-token",
-        role="standalone",
-        download_concurrency=2,
+        auth_url="",
+        auth_secret="",
+        auth_yaml_path="/app/acl.yaml",
     )
 
 
