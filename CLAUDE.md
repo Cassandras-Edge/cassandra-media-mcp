@@ -115,7 +115,7 @@ tofu apply
 - **Auth**: `McpKeyAuthProvider` validates `mcp_` API keys via ACL service `/keys/validate`
 - **ACL**: `Enforcer` loads baked-in `acl.yaml` (injected at Docker build time via `AUTH_YAML_CONTENT` build arg)
 - **Secret**: `cassandra-yt-mcp-mcp` k8s secret (AUTH_URL, AUTH_SECRET)
-- **Tunnel**: `yt-mcp-mcp.cassandrasedge.com` → port 3003 (for testing; will cut over to `yt-mcp.cassandrasedge.com`)
+- **Tunnel**: `youtube.cassandrasedge.com` → port 3003
 
 ## Observability
 

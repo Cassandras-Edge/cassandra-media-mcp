@@ -99,7 +99,7 @@ def create_mcp_server(settings: Settings) -> FastMCP:
                 mcp_key_provider.close()
 
     mcp = FastMCP(
-        name="Cassandra YT MCP",
+        name="YouTube",
         auth=auth_provider,
         lifespan=lifespan,
     )
