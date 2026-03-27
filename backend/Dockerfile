@@ -19,7 +19,7 @@ RUN set -eux; \
     curl -fsSL "$YTDLP_URL" -o /usr/local/bin/yt-dlp; \
     chmod +x /usr/local/bin/yt-dlp; \
     yt-dlp --version; \
-    mkdir -p /etc/yt-dlp && printf "%s\n" "--remote-components ejs:github" "--js-runtimes nodejs" > /etc/yt-dlp.conf
+    mkdir -p /etc/yt-dlp && printf "%s\n" "--remote-components ejs:github" "--js-runtimes node" > /etc/yt-dlp.conf
 
 RUN groupadd -g 1001 app && useradd -u 1001 -g app -s /bin/bash -m app
 
