@@ -36,7 +36,9 @@ ALL_TOOL_NAMES = [
 ]
 
 
-def _get_email(token: AccessToken) -> str:
+def _get_email(token: AccessToken | None) -> str:
+    if token is None:
+        return ""
     return token.claims.get("email", "")
 
 
