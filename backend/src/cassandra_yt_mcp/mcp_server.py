@@ -127,6 +127,25 @@ def create_mcp_server(settings: Settings) -> FastMCP:
 
     mcp_kwargs: dict = {
         "name": "YouTube",
+        "instructions": (
+            "# Cassandra YouTube/Media\n\n"
+            "Video and audio transcription via yt-dlp + GPU-accelerated ASR (Parakeet TDT) "
+            "with speaker diarization. Works with YouTube, Twitch VODs/clips, Twitter/X "
+            "videos, and 1000+ other yt-dlp-compatible sites.\n\n"
+            "## When to use\n"
+            "- **Transcribe** — convert any video/audio URL to searchable text with speakers\n"
+            "- **Search transcripts** — find content across all transcribed videos\n"
+            "- **Read transcripts** — get full text in compact/markdown/text/json formats\n"
+            "- **YouTube browsing** — search videos, list channel content, get comments\n"
+            "- **Watch Later sync** — auto-transcribe new videos from the user's Watch Later\n\n"
+            "## Getting started\n"
+            "Transcription is async: `transcribe(url)` → get `job_id` → poll `job_status(job_id)` "
+            "until done → `read_transcript(video_id)` to get text. For YouTube URLs, cookies "
+            "from portal are used automatically. Already-transcribed videos skip the queue.\n\n"
+            "## Discovery\n"
+            "`tags()` → browse categories, `search(query, tags=[...])` → find tools, "
+            "`get_schema(tools=[...])` → see params. Execute via gateway `execute` tool."
+        ),
         "lifespan": lifespan,
         "middleware": [acl_mw] if acl_mw._enabled else [],  # noqa: SLF001
     }
