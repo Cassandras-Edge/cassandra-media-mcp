@@ -150,7 +150,7 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         "middleware": [acl_mw] if acl_mw._enabled else [],  # noqa: SLF001
     }
     if settings.code_mode:
-        mcp_kwargs["transforms"] = [DiscoveryTransform()]
+        mcp_kwargs["transforms"] = [DiscoveryTransform(service_id=SERVICE_ID)]
     if auth_provider:
         mcp_kwargs["auth"] = auth_provider
 
