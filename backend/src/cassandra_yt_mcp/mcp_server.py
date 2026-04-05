@@ -12,7 +12,7 @@ from fastmcp.dependencies import CurrentAccessToken
 from fastmcp.server.auth import AccessToken
 from fastmcp.server.context import Context
 
-from cassandra_yt_mcp.acl import Enforcer, load_enforcer
+from cassandra_mcp_auth import AclMiddleware
 from cassandra_yt_mcp.auth import McpKeyAuthProvider, build_auth
 from cassandra_yt_mcp.config import Settings
 from cassandra_yt_mcp.runtime import AppRuntime
@@ -82,37 +82,28 @@ def _is_youtube_url(url: str) -> bool:
     return any(h in lower for h in ("youtube.com", "youtu.be"))
 
 
-def _check_acl(enforcer: Enforcer, email: str, tool_name: str) -> None:
-    """Raise ValueError if the user is denied access to a tool."""
-    result = enforcer.enforce(email, SERVICE_ID, tool_name)
-    if not result.allowed:
-        raise ValueError(f"Access denied: {result.reason}")
-
-
 def create_mcp_server(settings: Settings) -> FastMCP:
     """Create and configure the FastMCP server with all tools."""
 
+    auth_provider = None
     mcp_key_provider: McpKeyAuthProvider | None = None
-    if settings.workos_client_id and settings.workos_authkit_domain and settings.base_url:
-        auth_provider, mcp_key_provider = build_auth(
-            acl_url=settings.auth_url,
-            acl_secret=settings.auth_secret,
-            service_id=SERVICE_ID,
-            base_url=settings.base_url,
-            workos_client_id=settings.workos_client_id,
-            workos_authkit_domain=settings.workos_authkit_domain,
-        )
-    else:
-        mcp_key_provider = McpKeyAuthProvider(
-            acl_url=settings.auth_url,
-            acl_secret=settings.auth_secret,
-            service_id=SERVICE_ID,
-        )
-        auth_provider = mcp_key_provider
-
-    # Load ACL enforcer from bundled acl.yaml
-    acl_path = Path(settings.auth_yaml_path)
-    enforcer = load_enforcer(acl_path) if acl_path.exists() else None
+    if settings.auth_url and settings.auth_secret:
+        if settings.workos_client_id and settings.workos_authkit_domain and settings.base_url:
+            auth_provider, mcp_key_provider = build_auth(
+                acl_url=settings.auth_url,
+                acl_secret=settings.auth_secret,
+                service_id=SERVICE_ID,
+                base_url=settings.base_url,
+                workos_client_id=settings.workos_client_id,
+                workos_authkit_domain=settings.workos_authkit_domain,
+            )
+        else:
+            mcp_key_provider = McpKeyAuthProvider(
+                acl_url=settings.auth_url,
+                acl_secret=settings.auth_secret,
+                service_id=SERVICE_ID,
+            )
+            auth_provider = mcp_key_provider
 
     # Shared state populated by lifespan, accessible to custom routes via closure.
     _state: dict[str, object] = {}
@@ -123,18 +114,24 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         runtime.start()
         _state["runtime"] = runtime
         try:
-            yield {"runtime": runtime, "enforcer": enforcer, "auth_url": settings.auth_url, "auth_secret": settings.auth_secret}
+            yield {"runtime": runtime, "auth_url": settings.auth_url, "auth_secret": settings.auth_secret}
         finally:
             _state.clear()
             runtime.close()
             if mcp_key_provider is not None:
                 mcp_key_provider.close()
 
-    mcp = FastMCP(
-        name="YouTube",
-        auth=auth_provider,
-        lifespan=lifespan,
-    )
+    acl_mw = AclMiddleware(service_id=SERVICE_ID, acl_path=settings.auth_yaml_path)
+
+    mcp_kwargs: dict = {
+        "name": "YouTube",
+        "lifespan": lifespan,
+        "middleware": [acl_mw] if acl_mw._enabled else [],  # noqa: SLF001
+    }
+    if auth_provider:
+        mcp_kwargs["auth"] = auth_provider
+
+    mcp = FastMCP(**mcp_kwargs)
 
     # ── Service API (gateway-facing REST routes) ──
     from cassandra_yt_mcp.service_api import register_service_api  # noqa: PLC0415
@@ -188,9 +185,6 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         runtime: AppRuntime = ctx.lifespan_context["runtime"]
-        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
-        if acl:
-            _check_acl(acl, _get_email(token), "transcribe")
 
         cookies_b64 = None
         if _is_youtube_url(url):
@@ -212,9 +206,6 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         runtime: AppRuntime = ctx.lifespan_context["runtime"]
-        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
-        if acl:
-            _check_acl(acl, _get_email(token), "job_status")
 
         return runtime.get_job_status(job_id)
 
@@ -228,9 +219,6 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         runtime: AppRuntime = ctx.lifespan_context["runtime"]
-        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
-        if acl:
-            _check_acl(acl, _get_email(token), "search")
 
         limit = max(1, min(limit, 50))
         return {"query": query, "results": runtime.transcripts.search(query=query, limit=limit)}
@@ -246,9 +234,6 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         runtime: AppRuntime = ctx.lifespan_context["runtime"]
-        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
-        if acl:
-            _check_acl(acl, _get_email(token), "list_transcripts")
 
         limit = max(1, min(limit, 100))
         items = runtime.transcripts.list_transcripts(platform=platform, channel=channel, limit=limit)
@@ -272,9 +257,6 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         runtime: AppRuntime = ctx.lifespan_context["runtime"]
-        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
-        if acl:
-            _check_acl(acl, _get_email(token), "read_transcript")
 
         transcript = runtime.transcripts.get_by_video_id(video_id)
         if transcript is None:
@@ -357,9 +339,6 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         runtime: AppRuntime = ctx.lifespan_context["runtime"]
-        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
-        if acl:
-            _check_acl(acl, _get_email(token), "yt_search")
 
         limit = max(1, min(limit, 25))
         cookies_file = _write_cookies_to_temp(token, ctx)
@@ -390,9 +369,6 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         runtime: AppRuntime = ctx.lifespan_context["runtime"]
-        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
-        if acl:
-            _check_acl(acl, _get_email(token), "list_channel_videos")
 
         limit = max(1, min(limit, 50))
         if tab not in ("shorts", "videos", "streams"):
@@ -422,9 +398,6 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         runtime: AppRuntime = ctx.lifespan_context["runtime"]
-        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
-        if acl:
-            _check_acl(acl, _get_email(token), "get_comments")
 
         limit = max(1, min(limit, 100))
         if sort not in ("top", "new"):
@@ -455,9 +428,6 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         runtime: AppRuntime = ctx.lifespan_context["runtime"]
-        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
-        if acl:
-            _check_acl(acl, _get_email(token), "watch_later_sync")
 
         cookies = _get_youtube_cookies(token, ctx)
         if not cookies:
@@ -481,9 +451,6 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         token: AccessToken = CurrentAccessToken(),
     ) -> dict:
         runtime: AppRuntime = ctx.lifespan_context["runtime"]
-        acl: Enforcer | None = ctx.lifespan_context["enforcer"]
-        if acl:
-            _check_acl(acl, _get_email(token), "watch_later_status")
 
         user_id = _get_email(token)
         user = runtime.watch_later_repo.get_user(user_id)
