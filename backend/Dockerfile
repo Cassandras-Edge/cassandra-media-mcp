@@ -28,7 +28,7 @@ RUN mkdir -p /usr/lib/yt-dlp-plugins/yt-dlp-get-pot /usr/lib/yt-dlp-plugins/bgut
     && cp -r /tmp/yt-dlp-get-pot/yt_dlp_plugins /usr/lib/yt-dlp-plugins/yt-dlp-get-pot/ \
     && git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil \
     && cp -r /tmp/bgutil/plugin/yt_dlp_plugins /usr/lib/yt-dlp-plugins/bgutil-pot/ \
-    && cd /tmp/bgutil/server && npm ci --omit=dev && npx tsc \
+    && cd /tmp/bgutil/server && npm ci && npx -p typescript tsc \
     && mkdir -p /opt/bgutil-server && cp -r /tmp/bgutil/server/build /tmp/bgutil/server/node_modules /tmp/bgutil/server/package.json /opt/bgutil-server/ \
     && rm -rf /tmp/yt-dlp-get-pot /tmp/bgutil \
     && echo '--plugin-dirs /usr/lib/yt-dlp-plugins' >> /etc/yt-dlp.conf
