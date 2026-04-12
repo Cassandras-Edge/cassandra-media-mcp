@@ -8,30 +8,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg curl ca-certificates git nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-RUN set -eux; \
-    if [ "$YTDLP_CHANNEL" = "nightly" ]; then \
-      YTDLP_URL="https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp"; \
-    elif [ "$YTDLP_CHANNEL" = "stable" ]; then \
-      YTDLP_URL="https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"; \
-    else \
-      echo "Unsupported YTDLP_CHANNEL: $YTDLP_CHANNEL"; exit 1; \
-    fi; \
-    curl -fsSL "$YTDLP_URL" -o /usr/local/bin/yt-dlp; \
-    chmod +x /usr/local/bin/yt-dlp; \
-    yt-dlp --version; \
-    mkdir -p /etc/yt-dlp && printf "%s\n" "--remote-components ejs:github" "--js-runtimes node" > /etc/yt-dlp.conf
+# Install yt-dlp via pip (not standalone binary) so plugins can load
+RUN pip install --no-cache-dir yt-dlp \
+    && yt-dlp --version \
+    && mkdir -p /etc/yt-dlp && printf "%s\n" "--remote-components ejs:github" "--js-runtimes node" > /etc/yt-dlp.conf
 
 # ── PO Token provider (fixes YouTube 403 on media downloads) ──
-# Install yt-dlp plugins for PO token support
-RUN mkdir -p /usr/lib/yt-dlp-plugins/yt-dlp-get-pot /usr/lib/yt-dlp-plugins/bgutil-pot \
-    && git clone --depth 1 https://github.com/coletdjnz/yt-dlp-get-pot.git /tmp/yt-dlp-get-pot \
-    && cp -r /tmp/yt-dlp-get-pot/yt_dlp_plugins /usr/lib/yt-dlp-plugins/yt-dlp-get-pot/ \
+# Install yt-dlp plugins as pip packages so they load in the same Python env
+RUN pip install --no-cache-dir \
+      "yt-dlp-get-pot @ git+https://github.com/coletdjnz/yt-dlp-get-pot.git" \
+      "bgutil-ytdlp-pot-provider @ git+https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git#subdirectory=plugin" \
     && git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil \
-    && cp -r /tmp/bgutil/plugin/yt_dlp_plugins /usr/lib/yt-dlp-plugins/bgutil-pot/ \
     && cd /tmp/bgutil/server && npm ci && npx -p typescript tsc \
     && mkdir -p /opt/bgutil-server && cp -r /tmp/bgutil/server/build /tmp/bgutil/server/node_modules /tmp/bgutil/server/package.json /opt/bgutil-server/ \
-    && rm -rf /tmp/yt-dlp-get-pot /tmp/bgutil \
-    && echo '--plugin-dirs /usr/lib/yt-dlp-plugins' >> /etc/yt-dlp.conf
+    && rm -rf /tmp/bgutil
 
 RUN groupadd -g 1001 app && useradd -u 1001 -g app -s /bin/bash -m app
 
