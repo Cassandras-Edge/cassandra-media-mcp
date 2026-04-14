@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from cassandra_yt_mcp.services.sxm import is_sxm_url, resolve as resolve_sxm
 from cassandra_yt_mcp.types import DownloadResult
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,21 @@ class Downloader:
         self.cookies_file = cookies_file
 
     def download(
+        self,
+        *,
+        url: str,
+        job_id: str,
+        cookies_file: Path | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> DownloadResult:
+        # SXM URLs need pre-resolution — yt-dlp has no SXM extractor
+        if is_sxm_url(url):
+            return self._download_sxm(url=url, job_id=job_id, on_progress=on_progress)
+        return self._download_ytdlp(
+            url=url, job_id=job_id, cookies_file=cookies_file, on_progress=on_progress,
+        )
+
+    def _download_ytdlp(
         self,
         *,
         url: str,
@@ -101,6 +117,76 @@ class Downloader:
 
         audio_path = candidates[0]
         # Pre-convert to 16kHz mono WAV so downstream skips ffmpeg
+        if audio_path.suffix != ".wav":
+            wav_path = audio_path.with_suffix(".wav")
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", str(audio_path),
+                 "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+                 str(wav_path)],
+                capture_output=True, timeout=300,
+            )
+            if result.returncode == 0:
+                audio_path.unlink()
+                audio_path = wav_path
+                logger.info("Pre-converted to WAV: %s", wav_path.name)
+
+        return DownloadResult(metadata=metadata, audio_path=str(audio_path))
+
+    def _download_sxm(
+        self,
+        *,
+        url: str,
+        job_id: str,
+        on_progress: ProgressCallback | None = None,
+    ) -> DownloadResult:
+        """Resolve an SXM URL and download via yt-dlp's generic HLS handler."""
+        logger.info("Resolving SXM stream for job %s", job_id)
+        sxm = resolve_sxm(url)
+
+        job_dir = self.work_root / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        entity_id = str(sxm.metadata.get("id", job_id))
+        output_template = str(job_dir / f"{entity_id}.%(ext)s")
+
+        cmd = [
+            "yt-dlp",
+            "--print-json",
+            "--no-playlist",
+            "--no-warnings",
+            "--newline",
+            "--concurrent-fragments", "16",
+            "--add-header", "Origin: https://www.siriusxm.com",
+            "--add-header", "Referer: https://www.siriusxm.com/",
+            "-f", "worstaudio/worst",
+            "-x",
+            "-o", output_template,
+        ]
+        if sxm.hls_key_hex:
+            cmd.extend(["--extractor-args", f"generic:hls_key={sxm.hls_key_hex}"])
+        cmd.append(sxm.m3u8_url)
+
+        # SXM episodes can be 2+ hours — scale timeout to duration with a floor
+        duration_s = sxm.metadata.get("duration") or 0
+        timeout = max(1800, int(duration_s) * 2)
+
+        stdout, stderr, returncode = self._run_with_progress(cmd, on_progress, timeout=timeout)
+        if returncode != 0:
+            raise RuntimeError(stderr.strip() or "yt-dlp SXM download failed")
+
+        # Merge yt-dlp output metadata with our SXM metadata
+        try:
+            ytdlp_meta = self._parse_last_json_line(stdout)
+        except RuntimeError:
+            ytdlp_meta = {}
+        metadata = {**ytdlp_meta, **sxm.metadata}
+
+        candidates = sorted(job_dir.glob(f"{entity_id}.*"))
+        if not candidates:
+            candidates = sorted(job_dir.iterdir())
+        if not candidates:
+            raise RuntimeError("Audio file was not produced by yt-dlp")
+
+        audio_path = candidates[0]
         if audio_path.suffix != ".wav":
             wav_path = audio_path.with_suffix(".wav")
             result = subprocess.run(
